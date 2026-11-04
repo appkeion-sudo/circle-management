@@ -6,14 +6,14 @@ Supabase Auth・PostgreSQL・Storageを利用する静的サイトです。
 ## 既存サイトへの修正適用
 
 1. 対象プロジェクトが `cjymelefxesbmbicemvf` であることを確認します。
-2. Supabase SQL Editorなどの書き込み可能な接続で `consistency_update.sql` を実行します。
+2. Supabase SQL Editorなどの書き込み可能な接続で `setup.sql` を実行します。
    現在の読み取り専用MCP接続では適用できません。ファイルを作成しただけでは本番DBは更新されません。
 3. SQLが成功した後、HTML・CSS・JavaScriptを一式デプロイします。
    更新したJavaScriptは新しいRPCを利用するため、DB更新を先に実行してください。
 4. 一般部員と部長で、他バンド名の表示、締切前の取消、採点の再表示、
    合否設定、無効票変更後の再集計、結果公開を確認します。
 
-`consistency_update.sql` はトランザクション単位で適用します。再実行可能です。
+`setup.sql` はトランザクション単位で適用します。再実行可能です。
 既存の部員・予定・採点・合否は削除しません。受付中／下書きのエントリーについては、
 保存済みメンバーと現在のプロフィールを使って1年生判定を修正します。
 採点開始後・公開済みの判定は履歴として維持します。
@@ -47,16 +47,15 @@ Supabase Auth・PostgreSQL・Storageを利用する静的サイトです。
 
 ## SQLファイルの位置づけ
 
-現在の本番DBには `previous_live_update.sql` までの構造・RPCが存在するため、
-今回の修正は `consistency_update.sql` だけで適用できます。
+本番用SQLは **`setup.sql`** に統合しています。Supabase SQL Editorでこの1ファイルを実行すると、
+オーディション・前回ライブ・整合性修正・タイムテーブル・UIの更新を依存順に適用します。
+全体を1つのトランザクションで実行するため、途中で失敗した場合は全体をロールバックします。再実行可能です。
+以前の個別更新SQLを実行済みの環境でも、同じ `setup.sql` を使用します。
 
-過去の更新を順番に行う既存環境では、
-`setup.sql` → `update.sql` → `entry_rules_update.sql` → `previous_live_update.sql` → `consistency_update.sql`
-の順です。修正適用後に古いSQLだけを再実行すると、関数が旧仕様へ戻ることがあります。
-
-これらは既存DB向けの差分SQLです。認証・部員・バンド管理や初期オーディションテーブルの
-作成を含む、新規本番環境の構築一式ではありません。`tests/fixtures/database.sql` も
-ローカルテスト専用で、本番構築には使用しないでください。
+これは既存DB向けの更新SQLです。認証・部員・バンド管理や初期オーディションテーブル、
+既存のプロフィール・役職RPC（`profile_context()`、`circle_members_admin()`、`circle_roles_list()` など）が必要です。
+新規本番環境の構築一式ではありません。`tests/fixtures/database.sql` はローカルテスト専用で、
+本番構築には使用しないでください。
 
 ## 検証
 
@@ -89,12 +88,12 @@ DBテストはPGliteのメモリ内PostgreSQLで実行し、本番Supabaseへ接
 自分の演奏中と前後の通常転換に重ならないよう、自分のバンドと、通常転換で隣接するバンドを自動割り当てから除外します。
 旧形式の公開版・過去ODはそのまま表示・出力できます。旧形式の下書きは開いた時に、直前の転換の係を次のバンドへ引き継ぎます。
 先頭バンドは空欄になるため、確認・手動修正または係の全再生成を行って保存・再公開してください。
-DB更新には更新済みの `timetable_update.sql` を再実行してください。既存の公開版や下書きはSQL適用だけでは変更しません。
+DB更新には統合済みの `setup.sql` を実行してください。既存の公開版や下書きはSQL適用だけでは変更しません。
 
 `timetable.md` の仕様に沿って、下書き・公開版、時間の連動計算、休憩、係の自動割り当てと手動例外、
 参加取消、サイト内通知、PDF・PNG・Excel（.xlsx）出力を実装しています。
 
-導入時は既存の `consistency_update.sql` 適用後に **`timetable_update.sql`** をSupabase SQL Editorで実行し、
+導入時は **`setup.sql`** をSupabase SQL Editorで実行し、
 HTML・CSS・JavaScriptを一緒に配信してください。この作業では本番DBへの適用・サイトの配信は行っていません。
 SQLはトランザクション内で実行され、再適用できます。
 
@@ -132,7 +131,7 @@ DBテストでは本番データに接続せず、既存プロフィール・役
 PCはサイドバーを常時表示、スマートフォンはボタン・スワイプ・背景タップで開閉します。
 お知らせは部長・サイト管理者のみ編集でき、サイト管理者に部長権限は追加しません。
 
-導入時は `timetable_update.sql` の後に **`ui_update.sql`** をSupabase SQL Editorで適用し、
+導入時は **`setup.sql`** をSupabase SQL Editorで適用し、
 `autosave.js`・`ui.js` を含めてHTML・CSS・JavaScriptを配信してください。
 既存の `profile_context()` の `is_site_admin` を権限判定に使用します。
 この差分は本番DBへの適用・サイト配信を実行しません。

@@ -1,5 +1,10 @@
--- Run in Supabase SQL Editor after the 8 audition tables from the previous step exist.
+-- 既存Supabase DB向けの統合SQL。新規DBの構築用ではありません。
+-- 前提: 既存の認証・部員・バンド・オーディションのテーブルと、
+-- is_circle_president(), is_band_member(uuid), circle_members_admin(),
+-- circle_roles_list(), profile_context() が存在すること。
+-- 全更新を1トランザクションで適用します。再実行可能です。
 BEGIN;
+-- Section: setup.sql
 ALTER TABLE public.audition_scores ADD COLUMN IF NOT EXISTS comment text;
 CREATE TABLE IF NOT EXISTS public.audition_entry_members (
  entry_id uuid NOT NULL REFERENCES public.audition_entries(id) ON DELETE CASCADE,
@@ -211,4 +216,1027 @@ GRANT EXECUTE ON FUNCTION public.audition_results_view(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.audition_set_pass(uuid,boolean,text) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.audition_feedback_list() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.audition_feedback(uuid) TO authenticated;
+
+-- Section: update.sql
+CREATE TABLE IF NOT EXISTS public.audition_invalid_votes (
+ audition_id uuid NOT NULL REFERENCES public.auditions(id) ON DELETE CASCADE,
+ judge_id uuid NOT NULL REFERENCES public.profiles(id),
+ PRIMARY KEY (audition_id,judge_id)
+);
+ALTER TABLE public.audition_invalid_votes ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.audition_invalid_votes FROM anon,authenticated;
+
+CREATE OR REPLACE FUNCTION public.audition_judges(p_audition_id uuid)
+RETURNS TABLE(judge_id uuid,username text,completed bigint,required bigint,is_invalid boolean)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ閲覧できます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.auditions WHERE id=p_audition_id AND status='closed') THEN RAISE EXCEPTION '採点終了後のみ操作できます'; END IF;
+ RETURN QUERY
+ WITH judges AS (SELECT DISTINCT s.judge_id FROM public.audition_scores s WHERE s.audition_id=p_audition_id),
+ eligible AS (
+ SELECT j.judge_id,e.id AS entry_id,c.id AS criterion_id
+ FROM judges j JOIN public.audition_entries e ON e.audition_id=p_audition_id
+ JOIN public.audition_criteria c ON c.audition_id=p_audition_id
+ WHERE NOT EXISTS(SELECT 1 FROM public.audition_entry_members m WHERE m.entry_id=e.id AND m.user_id=j.judge_id)
+ )
+ SELECT j.judge_id,p.username,
+ count(s.id) AS completed,count(x.criterion_id) AS required,
+ EXISTS(SELECT 1 FROM public.audition_invalid_votes iv WHERE iv.audition_id=p_audition_id AND iv.judge_id=j.judge_id) AS is_invalid
+ FROM judges j JOIN public.profiles p ON p.id=j.judge_id
+ LEFT JOIN eligible x ON x.judge_id=j.judge_id
+ LEFT JOIN public.audition_scores s ON s.entry_id=x.entry_id AND s.criterion_id=x.criterion_id AND s.judge_id=x.judge_id
+ GROUP BY j.judge_id,p.username ORDER BY p.username;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.audition_set_invalid_vote(p_audition_id uuid,p_judge_id uuid,p_invalid boolean)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.auditions WHERE id=p_audition_id AND status='closed') THEN RAISE EXCEPTION '採点終了後のみ操作できます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.audition_scores WHERE audition_id=p_audition_id AND judge_id=p_judge_id) THEN RAISE EXCEPTION '採点者が存在しません'; END IF;
+ IF p_invalid THEN
+   INSERT INTO public.audition_invalid_votes(audition_id,judge_id) VALUES(p_audition_id,p_judge_id) ON CONFLICT DO NOTHING;
+ ELSE
+   DELETE FROM public.audition_invalid_votes WHERE audition_id=p_audition_id AND judge_id=p_judge_id;
+ END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.audition_delete(p_audition_id uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ削除できます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.auditions WHERE id=p_audition_id) THEN RAISE EXCEPTION '対象がありません'; END IF;
+ -- Existing foreign keys on auditions and entries use ON DELETE CASCADE.
+ DELETE FROM public.auditions WHERE id=p_audition_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.audition_create(
+ p_title text, p_description text, p_entry_deadline timestamptz,
+ p_scoring_deadline timestamptz, p_general_slots integer,
+ p_freshman_slots integer, p_criteria jsonb
+) RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_id uuid; v_c jsonb; v_count integer := 0;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ作成できます'; END IF;
+ IF nullif(trim(p_title),'') IS NULL OR length(p_title)>100 THEN RAISE EXCEPTION 'タイトルが不正です'; END IF;
+ IF p_entry_deadline IS NULL THEN RAISE EXCEPTION '締切が不正です'; END IF;
+ IF p_general_slots < 0 OR p_freshman_slots < 0 OR p_general_slots IS NULL OR p_freshman_slots IS NULL THEN RAISE EXCEPTION '枠数が不正です'; END IF;
+ IF jsonb_typeof(p_criteria) IS DISTINCT FROM 'array' OR jsonb_array_length(p_criteria) = 0 OR jsonb_array_length(p_criteria)>20 THEN RAISE EXCEPTION '採点項目は1〜20件です'; END IF;
+ INSERT INTO public.auditions(title,description,created_by,status,entry_deadline,scoring_deadline,general_slots,freshman_slots)
+ VALUES(trim(p_title),p_description,auth.uid(),'draft',p_entry_deadline,p_scoring_deadline,p_general_slots,p_freshman_slots) RETURNING id INTO v_id;
+ FOR v_c IN SELECT value FROM jsonb_array_elements(p_criteria) LOOP
+   IF nullif(trim(v_c->>'name'),'') IS NULL OR length(v_c->>'name')>100 OR
+      (v_c->>'max_score')::numeric <= 0 OR (v_c->>'max_score')::numeric > 999999 OR
+      (v_c->>'weight')::numeric < 0 OR (v_c->>'weight')::numeric > 9999 THEN
+     RAISE EXCEPTION '採点項目の値が不正です'; END IF;
+   INSERT INTO public.audition_criteria(audition_id,name,max_score,weight,sort_order)
+   VALUES(v_id, v_c->>'name',(v_c->>'max_score')::numeric,(v_c->>'weight')::numeric,v_count);
+   v_count := v_count+1;
+ END LOOP;
+ RETURN v_id;
+END $$;
+CREATE OR REPLACE FUNCTION public.audition_change_status(p_audition_id uuid,p_status text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_old text; v_entry timestamptz;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ SELECT status,entry_deadline INTO v_old,v_entry FROM public.auditions WHERE id=p_audition_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION '対象がありません'; END IF;
+ IF NOT ((v_old='draft' AND p_status='open') OR
+         (v_old='open' AND p_status='scoring') OR
+         (v_old='scoring' AND p_status='closed') OR
+         (v_old='closed' AND p_status='published')) THEN RAISE EXCEPTION '状態の変更順序が不正です'; END IF;
+ IF v_old='open' AND now()<v_entry THEN RAISE EXCEPTION 'エントリー締切前です'; END IF;
+ IF p_status='published' AND EXISTS(SELECT 1 FROM public.audition_results r JOIN public.audition_entries e ON e.id=r.entry_id WHERE e.audition_id=p_audition_id AND r.passed IS NULL) THEN RAISE EXCEPTION '全バンドの合否を決定してください'; END IF;
+ IF p_status='published' AND NOT EXISTS(SELECT 1 FROM public.audition_results r JOIN public.audition_entries e ON e.id=r.entry_id WHERE e.audition_id=p_audition_id) THEN
+   RAISE EXCEPTION '先に結果を集計してください'; END IF;
+ UPDATE public.auditions SET status=p_status,updated_at=now() WHERE id=p_audition_id;
+END $$;
+CREATE OR REPLACE FUNCTION public.audition_save_review(p_entry_id uuid,p_scores jsonb,p_comment text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_audition uuid; v_c record; v_score numeric; v_n integer := 0;
+BEGIN
+ SELECT e.audition_id INTO v_audition FROM public.audition_entries e JOIN public.auditions a ON a.id=e.audition_id
+ WHERE e.id=p_entry_id AND a.status='scoring';
+ IF v_audition IS NULL THEN RAISE EXCEPTION '採点期間外です'; END IF;
+
+ IF EXISTS(SELECT 1 FROM public.audition_entry_members WHERE entry_id=p_entry_id AND user_id=auth.uid()) THEN RAISE EXCEPTION '自分のバンドは採点できません'; END IF;
+ IF p_comment IS NOT NULL AND length(p_comment)>3000 THEN RAISE EXCEPTION '感想は3000文字以内です'; END IF;
+ IF jsonb_typeof(p_scores) IS DISTINCT FROM 'object' THEN RAISE EXCEPTION '採点データが不正です'; END IF;
+ FOR v_c IN SELECT id,max_score FROM public.audition_criteria WHERE audition_id=v_audition LOOP
+   IF NOT p_scores ? (v_c.id::text) THEN RAISE EXCEPTION '未入力の採点項目があります'; END IF;
+   v_score := (p_scores->>(v_c.id::text))::numeric;
+   IF v_score<0 OR v_score>v_c.max_score OR v_score<>trunc(v_score) THEN RAISE EXCEPTION '点数は満点以内の整数で入力してください'; END IF;
+   INSERT INTO public.audition_scores(audition_id,entry_id,criterion_id,judge_id,score,comment)
+   VALUES(v_audition,p_entry_id,v_c.id,auth.uid(),v_score,NULL)
+   ON CONFLICT(entry_id,criterion_id,judge_id) DO UPDATE SET score=EXCLUDED.score,updated_at=now();
+   v_n := v_n+1;
+ END LOOP;
+ IF v_n=0 OR (SELECT count(*) FROM jsonb_object_keys(p_scores))<>v_n THEN RAISE EXCEPTION '採点項目が不正です'; END IF;
+ -- Store one comment per judge and entry, on the first criterion row.
+ UPDATE public.audition_scores SET comment=nullif(trim(p_comment),'')
+ WHERE entry_id=p_entry_id AND judge_id=auth.uid()
+ AND criterion_id=(SELECT id FROM public.audition_criteria WHERE audition_id=v_audition ORDER BY sort_order,id LIMIT 1);
+END $$;
+CREATE OR REPLACE FUNCTION public.audition_finalize(p_audition_id uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_status text;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ SELECT status INTO v_status FROM public.auditions WHERE id=p_audition_id FOR UPDATE;
+ IF v_status <> 'closed' THEN RAISE EXCEPTION '採点終了後に集計してください'; END IF;
+ DELETE FROM public.audition_results WHERE entry_id IN (SELECT id FROM public.audition_entries WHERE audition_id=p_audition_id);
+ WITH judges AS (
+   SELECT DISTINCT s.judge_id FROM public.audition_scores s WHERE s.audition_id=p_audition_id
+ ), required AS (
+   SELECT j.judge_id,e.id AS entry_id,c.id AS criterion_id
+   FROM judges j JOIN public.audition_entries e ON e.audition_id=p_audition_id
+   JOIN public.audition_criteria c ON c.audition_id=p_audition_id
+   WHERE NOT EXISTS (SELECT 1 FROM public.audition_entry_members m WHERE m.entry_id=e.id AND m.user_id=j.judge_id)
+ ), judge_valid AS (
+   SELECT j.judge_id,
+     NOT EXISTS (SELECT 1 FROM required x LEFT JOIN public.audition_scores s
+       ON s.entry_id=x.entry_id AND s.criterion_id=x.criterion_id AND s.judge_id=x.judge_id
+       WHERE x.judge_id=j.judge_id AND s.id IS NULL)
+     AND NOT EXISTS (SELECT 1 FROM public.audition_invalid_votes iv
+       WHERE iv.audition_id=p_audition_id AND iv.judge_id=j.judge_id) AS valid
+   FROM judges j
+ ), judge_entry AS (
+   SELECT s.entry_id,s.judge_id,sum(s.score*c.weight) AS points
+   FROM public.audition_scores s JOIN public.audition_criteria c ON c.id=s.criterion_id
+   WHERE s.audition_id=p_audition_id GROUP BY s.entry_id,s.judge_id
+ ), totals AS (
+   SELECT e.id AS entry_id,
+     coalesce(avg(je.points) FILTER (WHERE j.valid),0) -
+       coalesce((SELECT sum(p.points) FROM public.audition_penalties p WHERE p.entry_id=e.id),0) AS total,
+     count(je.judge_id) FILTER (WHERE j.valid) AS valid_votes,
+     count(je.judge_id) FILTER (WHERE NOT j.valid) AS invalid_votes
+   FROM public.audition_entries e
+   LEFT JOIN judge_entry je ON je.entry_id=e.id
+   LEFT JOIN judge_valid j ON j.judge_id=je.judge_id
+   WHERE e.audition_id=p_audition_id GROUP BY e.id
+ ), ranked AS (
+   SELECT *,rank() OVER(ORDER BY total DESC) AS overall_rank FROM totals
+ )
+ INSERT INTO public.audition_results(entry_id,total_score,overall_rank,valid_votes,invalid_votes,calculated_at)
+ SELECT entry_id,total,overall_rank,valid_votes,invalid_votes,now() FROM ranked;
+END $$;
+REVOKE ALL ON FUNCTION public.audition_judges(uuid), public.audition_set_invalid_vote(uuid,uuid,boolean), public.audition_delete(uuid) FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION public.audition_judges(uuid), public.audition_set_invalid_vote(uuid,uuid,boolean), public.audition_delete(uuid) TO authenticated;
+
+-- Section: entry_rules_update.sql
+CREATE OR REPLACE FUNCTION public.audition_can_withdraw(p_entry_id uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+ SELECT auth.uid() IS NOT NULL AND EXISTS (
+   SELECT 1 FROM public.audition_entries e
+   JOIN public.auditions a ON a.id=e.audition_id
+   WHERE e.id=p_entry_id AND a.status='open' AND now()<a.entry_deadline
+     AND public.is_band_member(e.band_id)
+ );
+$$;
+
+CREATE OR REPLACE FUNCTION public.audition_withdraw(p_entry_id uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_audition_id uuid;
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ SELECT audition_id INTO v_audition_id FROM public.audition_entries WHERE id=p_entry_id;
+ IF NOT FOUND THEN RAISE EXCEPTION 'エントリーが見つかりません'; END IF;
+ -- Use the same parent lock as entry and status changes.
+ PERFORM 1 FROM public.auditions WHERE id=v_audition_id FOR UPDATE;
+ IF NOT public.audition_can_withdraw(p_entry_id) THEN
+   RAISE EXCEPTION '受付中・締切前の所属バンドのみ取り消せます';
+ END IF;
+ DELETE FROM public.audition_entries WHERE id=p_entry_id;
+ IF NOT FOUND THEN RAISE EXCEPTION 'エントリーが見つかりません'; END IF;
+END $$;
+REVOKE ALL ON FUNCTION public.audition_can_withdraw(uuid),public.audition_withdraw(uuid) FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION public.audition_can_withdraw(uuid),public.audition_withdraw(uuid) TO authenticated;
+
+-- Section: previous_live_update.sql
+ALTER TABLE public.auditions ADD COLUMN IF NOT EXISTS previous_live_audition_id uuid REFERENCES public.auditions(id) ON DELETE SET NULL;
+CREATE TABLE IF NOT EXISTS public.audition_performed_bands (
+ audition_id uuid NOT NULL REFERENCES public.auditions(id) ON DELETE CASCADE,
+ band_id uuid NOT NULL REFERENCES public.bands(id),
+ PRIMARY KEY(audition_id,band_id)
+);
+ALTER TABLE public.audition_performed_bands ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.audition_performed_bands FROM PUBLIC,anon,authenticated;
+
+-- The president records actual performers, independently of entry records.
+CREATE OR REPLACE FUNCTION public.audition_set_performed(p_audition_id uuid,p_band_id uuid,p_performed boolean)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.auditions WHERE id=p_audition_id AND status='published') THEN
+  RAISE EXCEPTION '結果公開済みのライブのみ出演履歴を登録できます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.audition_entries WHERE audition_id=p_audition_id AND band_id=p_band_id) THEN
+  RAISE EXCEPTION 'このライブにエントリーしていないバンドです'; END IF;
+ IF EXISTS(SELECT 1 FROM public.auditions WHERE previous_live_audition_id=p_audition_id AND status<>'draft') THEN
+  RAISE EXCEPTION 'この出演履歴は既に次のオーディションの判定に使われています。変更できません'; END IF;
+ IF p_performed THEN
+  INSERT INTO public.audition_performed_bands(audition_id,band_id) VALUES(p_audition_id,p_band_id) ON CONFLICT DO NOTHING;
+ ELSE
+  DELETE FROM public.audition_performed_bands WHERE audition_id=p_audition_id AND band_id=p_band_id;
+ END IF;
+END $$;
+CREATE OR REPLACE FUNCTION public.audition_performed_list(p_audition_id uuid)
+RETURNS TABLE(band_id uuid) LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ閲覧できます'; END IF;
+ RETURN QUERY SELECT p.band_id FROM public.audition_performed_bands p WHERE p.audition_id=p_audition_id;
+END $$;
+CREATE OR REPLACE FUNCTION public.audition_set_previous_live(p_audition_id uuid,p_previous_live_id uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_previous_status text;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.auditions WHERE id=p_audition_id AND status='draft') THEN RAISE EXCEPTION '下書きのみ設定できます'; END IF;
+ IF p_previous_live_id=p_audition_id THEN RAISE EXCEPTION '自分自身を前回ライブにできません'; END IF;
+ IF p_previous_live_id IS NOT NULL THEN
+  SELECT status INTO v_previous_status FROM public.auditions WHERE id=p_previous_live_id;
+  IF v_previous_status IS DISTINCT FROM 'published' THEN RAISE EXCEPTION '前回ライブは結果公開済みのものを選択してください'; END IF;
+ END IF;
+ UPDATE public.auditions SET previous_live_audition_id=p_previous_live_id WHERE id=p_audition_id;
+END $$;
+-- Replace entry RPC: serializes entries and checks actual performance history.
+CREATE OR REPLACE FUNCTION public.audition_enter(p_audition_id uuid,p_band_id uuid)
+RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_id uuid; v_fresh boolean; v_deadline timestamptz; v_status text; v_previous uuid;
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ SELECT a.status,a.entry_deadline,a.previous_live_audition_id INTO v_status,v_deadline,v_previous
+ FROM public.auditions a WHERE a.id=p_audition_id FOR UPDATE;
+ IF v_status IS DISTINCT FROM 'open' OR v_deadline IS NULL OR now()>=v_deadline THEN RAISE EXCEPTION 'エントリー期間外です'; END IF;
+ IF NOT public.is_band_member(p_band_id) THEN RAISE EXCEPTION '所属バンドのみエントリーできます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.band_members WHERE band_id=p_band_id) THEN RAISE EXCEPTION 'メンバーのいないバンドです'; END IF;
+ IF v_previous IS NOT NULL AND EXISTS (
+  SELECT 1 FROM public.audition_performed_bands p WHERE p.audition_id=v_previous AND p.band_id=p_band_id
+ ) THEN RAISE EXCEPTION '前回ライブに出演した同一バンドIDはエントリーできません'; END IF;
+ IF EXISTS (
+  SELECT 1 FROM public.audition_entries e
+  JOIN public.audition_entry_members m ON m.entry_id=e.id
+  JOIN public.band_members bm ON bm.user_id=m.user_id AND bm.band_id=p_band_id
+  WHERE e.audition_id=p_audition_id AND e.band_id<>p_band_id
+  GROUP BY e.id HAVING count(DISTINCT bm.user_id)>=3
+ ) THEN RAISE EXCEPTION '他のエントリーバンドとメンバーが3人以上重複しています'; END IF;
+ -- April-based school year in Japan, with explicit grade overrides.
+ SELECT coalesce(bool_and(coalesce(
+   coalesce(p.year_override,
+     extract(year from v_deadline AT TIME ZONE 'Asia/Tokyo')::integer
+     - CASE WHEN extract(month from v_deadline AT TIME ZONE 'Asia/Tokyo') < 4 THEN 1 ELSE 0 END
+     - p.admission_year + 1) = 1,
+   false)),false)
+ INTO v_fresh FROM public.band_members bm LEFT JOIN public.profiles p ON p.id=bm.user_id WHERE bm.band_id=p_band_id;
+ INSERT INTO public.audition_entries(audition_id,band_id,entered_by,is_freshman_band)
+ VALUES(p_audition_id,p_band_id,auth.uid(),v_fresh)
+ ON CONFLICT(audition_id,band_id) DO UPDATE SET band_id=EXCLUDED.band_id RETURNING id INTO v_id;
+ DELETE FROM public.audition_entry_members WHERE entry_id=v_id;
+ INSERT INTO public.audition_entry_members(entry_id,user_id)
+ SELECT v_id,user_id FROM public.band_members WHERE band_id=p_band_id;
+ RETURN v_id;
+END $$;
+REVOKE ALL ON FUNCTION public.audition_set_performed(uuid,uuid,boolean),public.audition_performed_list(uuid),public.audition_set_previous_live(uuid,uuid) FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION public.audition_set_performed(uuid,uuid,boolean),public.audition_performed_list(uuid),public.audition_set_previous_live(uuid,uuid) TO authenticated;
+
+-- Section: consistency_update.sql
+CREATE OR REPLACE FUNCTION public.audition_member_year(
+ p_admission_year integer,p_year_override integer,p_reference timestamptz
+) RETURNS integer LANGUAGE sql IMMUTABLE SET search_path = '' AS $$
+ SELECT coalesce(p_year_override,
+   extract(year FROM p_reference AT TIME ZONE 'Asia/Tokyo')::integer
+   - CASE WHEN extract(month FROM p_reference AT TIME ZONE 'Asia/Tokyo')<4 THEN 1 ELSE 0 END
+   - p_admission_year + 1);
+$$;
+
+
+CREATE OR REPLACE FUNCTION public.audition_can_withdraw(p_entry_id uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+ SELECT auth.uid() IS NOT NULL AND EXISTS (
+   SELECT 1 FROM public.audition_entries e
+   JOIN public.auditions a ON a.id=e.audition_id
+   WHERE e.id=p_entry_id AND a.status='open' AND now()<a.entry_deadline
+     AND public.is_band_member(e.band_id)
+ );
+$$;
+
+CREATE OR REPLACE FUNCTION public.audition_withdraw(p_entry_id uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_audition_id uuid;
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ SELECT audition_id INTO v_audition_id FROM public.audition_entries WHERE id=p_entry_id;
+ IF NOT FOUND THEN RAISE EXCEPTION 'エントリーが見つかりません'; END IF;
+ -- Use the same parent lock as entry and status changes.
+ PERFORM 1 FROM public.auditions WHERE id=v_audition_id FOR UPDATE;
+ IF NOT public.audition_can_withdraw(p_entry_id) THEN
+   RAISE EXCEPTION '受付中・締切前の所属バンドのみ取り消せます';
+ END IF;
+ DELETE FROM public.audition_entries WHERE id=p_entry_id;
+ IF NOT FOUND THEN RAISE EXCEPTION 'エントリーが見つかりません'; END IF;
+END $$;
+REVOKE ALL ON FUNCTION public.audition_can_withdraw(uuid),public.audition_withdraw(uuid) FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION public.audition_can_withdraw(uuid),public.audition_withdraw(uuid) TO authenticated;
+
+
+-- Only expose entry summaries, not arbitrary bands or their memberships.
+CREATE OR REPLACE FUNCTION public.audition_entries_view(p_audition_id uuid)
+RETURNS TABLE(id uuid,band_id uuid,band_name text,is_freshman_band boolean,
+ can_withdraw boolean,can_score boolean)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.auditions a WHERE a.id=p_audition_id
+   AND (a.status<>'draft' OR public.is_circle_president())) THEN
+   RAISE EXCEPTION 'このオーディションを閲覧できません';
+ END IF;
+ RETURN QUERY
+ SELECT e.id,e.band_id,b.name,e.is_freshman_band,
+   public.audition_can_withdraw(e.id),
+   a.status='scoring' AND NOT EXISTS(
+     SELECT 1 FROM public.audition_entry_members m WHERE m.entry_id=e.id AND m.user_id=auth.uid())
+ FROM public.audition_entries e JOIN public.bands b ON b.id=e.band_id
+ JOIN public.auditions a ON a.id=e.audition_id
+ WHERE e.audition_id=p_audition_id ORDER BY e.entered_at,e.id;
+END $$;
+
+-- Both operations run in the same transaction, including previous-live validation.
+CREATE OR REPLACE FUNCTION public.audition_create_with_previous(
+ p_title text,p_description text,p_entry_deadline timestamptz,p_scoring_deadline timestamptz,
+ p_general_slots integer,p_freshman_slots integer,p_criteria jsonb,p_previous_live_id uuid
+) RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_id uuid;
+BEGIN
+ v_id := public.audition_create(p_title,p_description,p_entry_deadline,p_scoring_deadline,
+   p_general_slots,p_freshman_slots,p_criteria);
+ PERFORM public.audition_set_previous_live(v_id,p_previous_live_id);
+ RETURN v_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.audition_enter(p_audition_id uuid, p_band_id uuid)
+ RETURNS uuid
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+DECLARE v_id uuid; v_fresh boolean; v_deadline timestamptz; v_status text; v_previous uuid;
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ SELECT a.status,a.entry_deadline,a.previous_live_audition_id INTO v_status,v_deadline,v_previous
+ FROM public.auditions a WHERE a.id=p_audition_id FOR UPDATE;
+ IF v_status IS DISTINCT FROM 'open' OR v_deadline IS NULL OR now()>=v_deadline THEN RAISE EXCEPTION 'エントリー期間外です'; END IF;
+ IF NOT public.is_band_member(p_band_id) THEN RAISE EXCEPTION '所属バンドのみエントリーできます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.band_members WHERE band_id=p_band_id) THEN RAISE EXCEPTION 'メンバーのいないバンドです'; END IF;
+ IF v_previous IS NOT NULL AND EXISTS (
+  SELECT 1 FROM public.audition_performed_bands p WHERE p.audition_id=v_previous AND p.band_id=p_band_id
+ ) THEN RAISE EXCEPTION '前回ライブに出演した同一バンドIDはエントリーできません'; END IF;
+ IF EXISTS (
+  SELECT 1 FROM public.audition_entries e
+  JOIN public.audition_entry_members m ON m.entry_id=e.id
+  JOIN public.band_members bm ON bm.user_id=m.user_id AND bm.band_id=p_band_id
+  WHERE e.audition_id=p_audition_id AND e.band_id<>p_band_id
+  GROUP BY e.id HAVING count(DISTINCT bm.user_id)>=3
+ ) THEN RAISE EXCEPTION '他のエントリーバンドとメンバーが3人以上重複しています'; END IF;
+ -- Match the profile's April school year; unknown members are not freshmen.
+ SELECT coalesce(bool_and(coalesce(public.audition_member_year(
+   p.admission_year, p.year_override, v_deadline
+ ) = 1, false)), false)
+ INTO v_fresh FROM public.band_members bm LEFT JOIN public.profiles p ON p.id=bm.user_id WHERE bm.band_id=p_band_id;
+ INSERT INTO public.audition_entries(audition_id,band_id,entered_by,is_freshman_band)
+ VALUES(p_audition_id,p_band_id,auth.uid(),v_fresh)
+ ON CONFLICT(audition_id,band_id) DO UPDATE SET band_id=EXCLUDED.band_id RETURNING id INTO v_id;
+ DELETE FROM public.audition_entry_members WHERE entry_id=v_id;
+ INSERT INTO public.audition_entry_members(entry_id,user_id)
+ SELECT v_id,user_id FROM public.band_members WHERE band_id=p_band_id;
+ RETURN v_id;
+END $function$
+;
+
+-- Fix pending entries only. Preserve the classification of auditions already being scored/published.
+UPDATE public.audition_entries e SET is_freshman_band=(
+ SELECT coalesce(bool_and(coalesce(public.audition_member_year(
+   p.admission_year,p.year_override,a.entry_deadline)=1,false)),false)
+ FROM public.audition_entry_members m LEFT JOIN public.profiles p ON p.id=m.user_id
+ WHERE m.entry_id=e.id
+)
+FROM public.auditions a
+WHERE a.id=e.audition_id AND a.status IN ('draft','open');
+
+-- Return only the caller's own review. Direct score-table access remains revoked.
+CREATE OR REPLACE FUNCTION public.audition_my_review(p_entry_id uuid)
+RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_review jsonb;
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.audition_entries e JOIN public.auditions a ON a.id=e.audition_id
+   WHERE e.id=p_entry_id AND a.status='scoring') THEN RAISE EXCEPTION '採点期間外です'; END IF;
+ IF EXISTS(SELECT 1 FROM public.audition_entry_members m
+   WHERE m.entry_id=p_entry_id AND m.user_id=auth.uid()) THEN
+   RAISE EXCEPTION '自分のバンドは採点できません';
+ END IF;
+ SELECT jsonb_build_object(
+   'scores',coalesce(jsonb_object_agg(s.criterion_id::text,s.score),'{}'::jsonb),
+   'comment',max(s.comment))
+ INTO v_review FROM public.audition_scores s
+ WHERE s.entry_id=p_entry_id AND s.judge_id=auth.uid();
+ RETURN v_review;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.audition_set_pass(p_entry_id uuid,p_passed boolean,p_category text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE v_a public.auditions%rowtype; v_fresh boolean; v_count integer; v_limit integer;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ -- Serialize decisions within an audition to prevent concurrent quota overruns.
+ SELECT a.* INTO v_a FROM public.auditions a JOIN public.audition_entries e ON e.audition_id=a.id
+ WHERE e.id=p_entry_id FOR UPDATE OF a;
+ IF NOT FOUND OR v_a.status IS DISTINCT FROM 'closed' OR NOT EXISTS(
+   SELECT 1 FROM public.audition_results WHERE entry_id=p_entry_id) THEN
+   RAISE EXCEPTION '公開前の集計済み結果のみ変更できます';
+ END IF;
+ IF p_passed IS NULL THEN RAISE EXCEPTION '合否を選択してください'; END IF;
+ IF p_passed THEN
+   IF p_category IS NULL OR p_category NOT IN ('general','freshman') THEN
+     RAISE EXCEPTION '合格枠が不正です';
+   END IF;
+   SELECT is_freshman_band INTO v_fresh FROM public.audition_entries WHERE id=p_entry_id;
+   IF p_category='freshman' AND v_fresh IS DISTINCT FROM true THEN
+     RAISE EXCEPTION '1年生バンドのみ1年生枠に合格できます';
+   END IF;
+   v_limit := CASE WHEN p_category='freshman' THEN v_a.freshman_slots ELSE v_a.general_slots END;
+   SELECT count(*) INTO v_count FROM public.audition_results r
+   JOIN public.audition_entries e ON e.id=r.entry_id
+   WHERE e.audition_id=v_a.id AND r.entry_id<>p_entry_id AND r.passed AND r.result_category=p_category;
+   IF v_count>=v_limit THEN RAISE EXCEPTION '合格枠の上限を超えています'; END IF;
+ END IF;
+ UPDATE public.audition_results SET passed=p_passed,
+   result_category=CASE WHEN p_passed THEN p_category ELSE NULL END WHERE entry_id=p_entry_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.audition_finalize(p_audition_id uuid)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+DECLARE v_status text;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ SELECT status INTO v_status FROM public.auditions WHERE id=p_audition_id FOR UPDATE;
+ IF v_status IS DISTINCT FROM 'closed' THEN RAISE EXCEPTION '採点終了後に集計してください'; END IF;
+ WITH judges AS (
+   SELECT DISTINCT s.judge_id FROM public.audition_scores s WHERE s.audition_id=p_audition_id
+ ), required AS (
+   SELECT j.judge_id,e.id AS entry_id,c.id AS criterion_id
+   FROM judges j JOIN public.audition_entries e ON e.audition_id=p_audition_id
+   JOIN public.audition_criteria c ON c.audition_id=p_audition_id
+   WHERE NOT EXISTS (SELECT 1 FROM public.audition_entry_members m WHERE m.entry_id=e.id AND m.user_id=j.judge_id)
+ ), judge_valid AS (
+   SELECT j.judge_id,
+     NOT EXISTS (SELECT 1 FROM required x LEFT JOIN public.audition_scores s
+       ON s.entry_id=x.entry_id AND s.criterion_id=x.criterion_id AND s.judge_id=x.judge_id
+       WHERE x.judge_id=j.judge_id AND s.id IS NULL)
+     AND NOT EXISTS (SELECT 1 FROM public.audition_invalid_votes iv
+       WHERE iv.audition_id=p_audition_id AND iv.judge_id=j.judge_id) AS valid
+   FROM judges j
+ ), judge_entry AS (
+   SELECT s.entry_id,s.judge_id,sum(s.score*c.weight) AS points
+   FROM public.audition_scores s JOIN public.audition_criteria c ON c.id=s.criterion_id
+   WHERE s.audition_id=p_audition_id GROUP BY s.entry_id,s.judge_id
+ ), totals AS (
+   SELECT e.id AS entry_id,
+     coalesce(avg(je.points) FILTER (WHERE j.valid),0) -
+       coalesce((SELECT sum(p.points) FROM public.audition_penalties p WHERE p.entry_id=e.id),0) AS total,
+     count(je.judge_id) FILTER (WHERE j.valid) AS valid_votes,
+     count(je.judge_id) FILTER (WHERE NOT j.valid) AS invalid_votes
+   FROM public.audition_entries e
+   LEFT JOIN judge_entry je ON je.entry_id=e.id
+   LEFT JOIN judge_valid j ON j.judge_id=je.judge_id
+   WHERE e.audition_id=p_audition_id GROUP BY e.id
+ ), ranked AS (
+   SELECT *,rank() OVER(ORDER BY total DESC) AS overall_rank FROM totals
+ )
+ INSERT INTO public.audition_results(entry_id,total_score,overall_rank,valid_votes,invalid_votes,calculated_at)
+ SELECT entry_id,total,overall_rank,valid_votes,invalid_votes,now() FROM ranked
+ ON CONFLICT (entry_id) DO UPDATE SET
+   total_score=EXCLUDED.total_score,
+   overall_rank=EXCLUDED.overall_rank,
+   valid_votes=EXCLUDED.valid_votes,
+   invalid_votes=EXCLUDED.invalid_votes,
+   calculated_at=EXCLUDED.calculated_at;
+END $function$
+;
+
+-- Recheck all results when publishing, including decisions saved before this migration.
+CREATE OR REPLACE FUNCTION public.audition_validate_publication()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+ IF NEW.status='published' AND OLD.status IS DISTINCT FROM 'published' THEN
+   IF NOT EXISTS(SELECT 1 FROM public.audition_entries WHERE audition_id=NEW.id) OR EXISTS(
+     SELECT 1 FROM public.audition_entries e LEFT JOIN public.audition_results r ON r.entry_id=e.id
+     WHERE e.audition_id=NEW.id AND (r.entry_id IS NULL OR r.passed IS NULL)) THEN
+     RAISE EXCEPTION '全バンドを集計し、合否を決定してください';
+   END IF;
+   IF EXISTS(
+     SELECT 1 FROM public.audition_results r JOIN public.audition_entries e ON e.id=r.entry_id
+     WHERE e.audition_id=NEW.id AND r.passed AND
+       (r.result_category IS NULL OR r.result_category NOT IN ('general','freshman')
+        OR (r.result_category='freshman' AND e.is_freshman_band IS DISTINCT FROM true))) THEN
+     RAISE EXCEPTION '合格区分または1年生枠の資格を確認してください';
+   END IF;
+   IF (SELECT count(*) FROM public.audition_results r JOIN public.audition_entries e ON e.id=r.entry_id
+       WHERE e.audition_id=NEW.id AND r.passed AND r.result_category='general')>NEW.general_slots
+   OR (SELECT count(*) FROM public.audition_results r JOIN public.audition_entries e ON e.id=r.entry_id
+       WHERE e.audition_id=NEW.id AND r.passed AND r.result_category='freshman')>NEW.freshman_slots THEN
+     RAISE EXCEPTION '合格枠の上限を超えています';
+   END IF;
+ END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS audition_validate_publication_trigger ON public.auditions;
+CREATE TRIGGER audition_validate_publication_trigger BEFORE UPDATE OF status ON public.auditions
+FOR EACH ROW EXECUTE FUNCTION public.audition_validate_publication();
+
+-- The existing icon bucket is public; align its upload limit with the 2 MiB UI.
+UPDATE storage.buckets SET file_size_limit=2097152
+WHERE id='band-icons';
+
+REVOKE ALL ON FUNCTION public.audition_member_year(integer,integer,timestamptz),
+ public.audition_entries_view(uuid),
+ public.audition_create_with_previous(text,text,timestamptz,timestamptz,integer,integer,jsonb,uuid),
+ public.audition_my_review(uuid) FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION public.audition_member_year(integer,integer,timestamptz),
+ public.audition_entries_view(uuid),
+ public.audition_create_with_previous(text,text,timestamptz,timestamptz,integer,integer,jsonb,uuid),
+ public.audition_my_review(uuid) TO authenticated;
+REVOKE ALL ON FUNCTION public.audition_validate_publication() FROM PUBLIC,anon,authenticated;
+
+-- Section: timetable_update.sql
+DO $$ BEGIN
+ IF to_regprocedure('public.circle_members_admin()') IS NULL OR to_regprocedure('public.circle_roles_list()') IS NULL
+  OR to_regprocedure('public.audition_member_year(integer,integer,timestamp with time zone)') IS NULL THEN
+  RAISE EXCEPTION '既存のプロフィール・役職RPCを先に用意してください';
+ END IF;
+END $$;
+CREATE TABLE IF NOT EXISTS public.audition_timetable_sources (
+ audition_id uuid PRIMARY KEY REFERENCES public.auditions ON DELETE CASCADE,
+ entry_order uuid[] NOT NULL, confirmed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS public.audition_availability (
+ entry_id uuid PRIMARY KEY REFERENCES public.audition_entries ON DELETE CASCADE,
+ windows jsonb NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS public.od_timetables (
+ audition_id uuid PRIMARY KEY REFERENCES public.auditions ON DELETE CASCADE,
+ event_date date NOT NULL, draft jsonb NOT NULL, published jsonb,
+ revision integer NOT NULL DEFAULT 1, publication integer NOT NULL DEFAULT 0,
+ published_at timestamptz
+);
+CREATE TABLE IF NOT EXISTS public.od_staff_role_settings (
+ role_id bigint PRIMARY KEY, excluded boolean NOT NULL
+);
+CREATE TABLE IF NOT EXISTS public.od_publication_events (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), audition_id uuid NOT NULL REFERENCES public.auditions ON DELETE CASCADE,
+ publication integer NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(audition_id,publication)
+);
+CREATE TABLE IF NOT EXISTS public.od_timetable_notifications (
+ event_id uuid REFERENCES public.od_publication_events ON DELETE CASCADE,
+ user_id uuid REFERENCES public.profiles ON DELETE CASCADE, message text NOT NULL,
+ before_schedule jsonb, after_schedule jsonb NOT NULL, PRIMARY KEY(event_id,user_id)
+);
+ALTER TABLE public.audition_timetable_sources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.audition_availability ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.od_timetables ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.od_staff_role_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.od_publication_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.od_timetable_notifications ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.audition_timetable_sources,public.audition_availability,public.od_timetables,
+ public.od_staff_role_settings,public.od_publication_events,public.od_timetable_notifications FROM anon,authenticated;
+
+-- This adapter uses existing role/member RPCs rather than assuming their backing table names.
+CREATE OR REPLACE FUNCTION public.od_timetable_people(p_audition_id uuid)
+RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path='' AS $$
+DECLARE result jsonb; members jsonb; roles jsonb;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ SELECT coalesce(jsonb_agg(to_jsonb(m)),'[]') INTO members FROM public.circle_members_admin() m;
+ SELECT coalesce(jsonb_agg(to_jsonb(r)),'[]') INTO roles FROM public.circle_roles_list() r;
+ SELECT coalesce(jsonb_agg(jsonb_build_object(
+  'id',p.id,'name',coalesce(p.username,'名前未設定'),
+  'year',public.audition_member_year(p.admission_year,p.year_override,now()),
+  'registered',EXISTS(SELECT 1 FROM public.audition_participants ap WHERE ap.audition_id=p_audition_id AND ap.user_id=p.id),
+  'excluded',EXISTS(SELECT 1 FROM public.circle_president cp WHERE cp.user_id=p.id) OR EXISTS(
+   SELECT 1 FROM jsonb_array_elements(members) m, jsonb_array_elements(roles) r
+   LEFT JOIN public.od_staff_role_settings s ON s.role_id=(r->>'id')::bigint
+   WHERE m->>'user_id'=p.id::text AND coalesce(m->'role_ids','[]') @> jsonb_build_array((r->>'id')::bigint)
+   AND coalesce(s.excluded,coalesce((r->>'exclude_from_staff_auto_assign')::boolean,false) OR (r->>'name') IN ('幹部','部長'))),
+  'entries',coalesce((SELECT jsonb_agg(em.entry_id) FROM public.audition_entry_members em
+    JOIN public.audition_entries e ON e.id=em.entry_id WHERE e.audition_id=p_audition_id AND em.user_id=p.id),'[]')
+ )),'[]') INTO result FROM public.profiles p;
+ RETURN result;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.audition_confirm_order(p_audition_id uuid,p_entries uuid[])
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE deadline timestamptz;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ SELECT entry_deadline INTO deadline FROM public.auditions WHERE id=p_audition_id FOR UPDATE;
+ IF deadline IS NULL OR now()<deadline THEN RAISE EXCEPTION 'エントリー締切後に確定してください'; END IF;
+ IF EXISTS(SELECT 1 FROM public.od_timetables WHERE audition_id=p_audition_id) THEN RAISE EXCEPTION '生成済みのため演奏順は変更できません'; END IF;
+ IF coalesce(cardinality(p_entries),0)=0 OR
+  cardinality(p_entries)<>(SELECT count(DISTINCT x) FROM unnest(p_entries) x) OR
+  cardinality(p_entries)<>(SELECT count(*) FROM public.audition_entries WHERE audition_id=p_audition_id) OR
+  EXISTS(SELECT 1 FROM unnest(p_entries) x WHERE NOT EXISTS(SELECT 1 FROM public.audition_entries WHERE id=x AND audition_id=p_audition_id))
+ THEN RAISE EXCEPTION '全エントリーを重複なく指定してください'; END IF;
+ INSERT INTO public.audition_timetable_sources(audition_id,entry_order) VALUES(p_audition_id,p_entries)
+ ON CONFLICT(audition_id) DO UPDATE SET entry_order=EXCLUDED.entry_order,confirmed_at=now();
+END $$;
+
+CREATE OR REPLACE FUNCTION public.audition_set_availability(p_entry_id uuid,p_windows jsonb)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE aid uuid; w jsonb;
+BEGIN
+ SELECT audition_id INTO aid FROM public.audition_entries WHERE id=p_entry_id;
+ PERFORM 1 FROM public.auditions WHERE id=aid FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION '対象がありません'; END IF;
+ IF NOT public.is_circle_president() AND NOT EXISTS(
+  SELECT 1 FROM public.audition_entries e JOIN public.band_members bm ON bm.band_id=e.band_id
+  JOIN public.auditions a ON a.id=e.audition_id
+  WHERE e.id=p_entry_id AND bm.user_id=auth.uid() AND a.status='open' AND now()<a.entry_deadline
+ ) THEN RAISE EXCEPTION '出演可能時間帯の変更権限がありません'; END IF;
+ IF EXISTS(SELECT 1 FROM public.od_timetables WHERE audition_id=aid) THEN RAISE EXCEPTION '生成後は申告時間帯を変更できません'; END IF;
+ IF jsonb_typeof(p_windows) IS DISTINCT FROM 'array' THEN RAISE EXCEPTION '時間帯が不正です'; END IF;
+ FOR w IN SELECT value FROM jsonb_array_elements(p_windows) LOOP
+  IF jsonb_typeof(w) IS DISTINCT FROM 'array' THEN RAISE EXCEPTION '時間帯が不正です'; END IF;
+  IF jsonb_array_length(w)<>2 OR
+   (w->>0)::integer<0 OR (w->>1)::integer<=(w->>0)::integer OR (w->>1)::integer>100000
+   OR jsonb_typeof(w->0) IS DISTINCT FROM 'number' OR jsonb_typeof(w->1) IS DISTINCT FROM 'number'
+   OR (w->>0)::numeric<>trunc((w->>0)::numeric) OR (w->>1)::numeric<>trunc((w->>1)::numeric)
+  THEN RAISE EXCEPTION '時間帯が不正です'; END IF;
+ END LOOP;
+ INSERT INTO public.audition_availability VALUES(p_entry_id,p_windows)
+ ON CONFLICT(entry_id) DO UPDATE SET windows=EXCLUDED.windows;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.od_timetable_context(p_audition_id uuid)
+RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path='' AS $$
+DECLARE t public.od_timetables; chief boolean:=public.is_circle_president(); result jsonb; roles jsonb;
+BEGIN
+ IF auth.uid() IS NULL OR NOT EXISTS(SELECT 1 FROM public.auditions WHERE id=p_audition_id AND (status<>'draft' OR chief)) THEN RAISE EXCEPTION '閲覧できません'; END IF;
+ SELECT * INTO t FROM public.od_timetables WHERE audition_id=p_audition_id;
+ result:=jsonb_build_object('president',chief,'published',t.published,'publication',t.publication,
+  'revision',t.revision,'archived',t.event_date<(now() AT TIME ZONE 'Asia/Tokyo')::date,
+  'has_timetable',t.audition_id IS NOT NULL,
+  'availability',(SELECT coalesce(jsonb_agg(jsonb_build_object('entry',e.id,'windows',coalesce(av.windows,'[]'))),'[]')
+   FROM public.audition_entries e LEFT JOIN public.audition_availability av ON av.entry_id=e.id WHERE e.audition_id=p_audition_id
+   AND (chief OR EXISTS(SELECT 1 FROM public.band_members bm WHERE bm.band_id=e.band_id AND bm.user_id=auth.uid()))),
+  'registered',EXISTS(SELECT 1 FROM public.audition_participants WHERE audition_id=p_audition_id AND user_id=auth.uid()));
+ IF chief THEN
+  SELECT coalesce(jsonb_agg(to_jsonb(r)||jsonb_build_object('excluded',coalesce(s.excluded,coalesce(r.exclude_from_staff_auto_assign,false) OR r.name IN ('部長','幹部')))),'[]')
+  INTO roles FROM public.circle_roles_list() r LEFT JOIN public.od_staff_role_settings s ON s.role_id=r.id;
+  result:=result||jsonb_build_object('draft',t.draft,'people',public.od_timetable_people(p_audition_id),'roles',roles,
+   'order',(SELECT to_jsonb(entry_order) FROM public.audition_timetable_sources WHERE audition_id=p_audition_id),
+   'entries',(SELECT coalesce(jsonb_agg(jsonb_build_object('entry',e.id,'name',b.name,'available',coalesce(av.windows,'[]')) ORDER BY e.entered_at,e.id),'[]')
+    FROM public.audition_entries e JOIN public.bands b ON b.id=e.band_id LEFT JOIN public.audition_availability av ON av.entry_id=e.id WHERE e.audition_id=p_audition_id));
+ END IF;
+ RETURN result;
+END $$;
+
+-- Validate and canonicalize the submitted snapshot. Identity, order, availability and
+-- eligibility always come from the server; only durations, breaks and staff are editable.
+CREATE OR REPLACE FUNCTION public.od_timetable_validate(p_audition_id uuid,p_plan jsonb,p_allow_exceptions boolean,p_automatic boolean DEFAULT false)
+RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path='' AS $$
+DECLARE ord uuid[]; people jsonb; item jsonb; canonical jsonb; items jsonb:='[]';
+ i integer:=0; n integer; minute integer; duration integer; pid text; person jsonb; partner jsonb;
+ staff jsonb; j integer; violation boolean; entryid uuid; bandname text; windows jsonb;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ SELECT entry_order INTO ord FROM public.audition_timetable_sources WHERE audition_id=p_audition_id;
+ people:=public.od_timetable_people(p_audition_id);
+ IF p_plan->>'staff_scope' IS DISTINCT FROM 'band' THEN RAISE EXCEPTION 'バンド単位の係割り当てに更新されています。画面を再読み込みしてください'; END IF;
+ IF jsonb_typeof(p_plan->'items') IS DISTINCT FROM 'array' OR jsonb_array_length(p_plan->'items')<>cardinality(ord)*2-1 THEN RAISE EXCEPTION '演奏順・行数が不正です'; END IF;
+ FOREACH pid IN ARRAY ARRAY['pa','gather','start'] LOOP
+  IF jsonb_typeof(p_plan->pid) IS DISTINCT FROM 'number' OR (p_plan->>pid)::numeric<>trunc((p_plan->>pid)::numeric)
+   OR (p_plan->>pid)::integer<0 OR (p_plan->>pid)::integer>=1440 THEN RAISE EXCEPTION '集合・開始時刻が不正です'; END IF;
+ END LOOP;
+ minute:=(p_plan->>'start')::integer;
+ FOR item IN SELECT value FROM jsonb_array_elements(p_plan->'items') LOOP
+  IF jsonb_typeof(item->'minutes') IS DISTINCT FROM 'number' OR (item->>'minutes')::numeric<>trunc((item->>'minutes')::numeric)
+   OR (item->>'minutes')::integer<=0 THEN RAISE EXCEPTION '所要時間は正の整数で入力してください'; END IF;
+  duration:=(item->>'minutes')::integer;
+  IF i%2=0 THEN
+   entryid:=ord[i/2+1];
+   IF item->>'kind' IS DISTINCT FROM 'performance' OR item->>'entry' IS DISTINCT FROM entryid::text THEN RAISE EXCEPTION '確定演奏順は変更できません'; END IF;
+   SELECT b.name,coalesce(av.windows,'[]') INTO bandname,windows FROM public.audition_entries e JOIN public.bands b ON b.id=e.band_id
+    LEFT JOIN public.audition_availability av ON av.entry_id=e.id WHERE e.id=entryid AND e.audition_id=p_audition_id;
+   IF NOT FOUND THEN RAISE EXCEPTION 'エントリーが変更されています'; END IF;
+   IF jsonb_array_length(windows)>0 AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(windows) w WHERE (w->>0)::integer<=minute AND minute+duration<=(w->>1)::integer)
+    AND NOT coalesce(p_allow_exceptions,false) THEN RAISE EXCEPTION '出演可能時間帯外です。警告を確認してください'; END IF;
+   staff:=item->'staff';
+    IF jsonb_typeof(staff) IS DISTINCT FROM 'array' OR jsonb_array_length(staff)<>4 THEN RAISE EXCEPTION '係は4枠必要です'; END IF;
+    FOR j IN 0..3 LOOP
+     pid:=staff->>j;
+     IF pid IS NULL THEN CONTINUE; END IF;
+     SELECT value INTO person FROM jsonb_array_elements(people) WHERE value->>'id'=pid;
+     IF person IS NULL THEN RAISE EXCEPTION '担当者が存在しません'; END IF;
+     SELECT value INTO partner FROM jsonb_array_elements(people) WHERE value->>'id'=staff->>(j # 1);
+     violation:=NOT (person->>'registered')::boolean OR (person->>'excluded')::boolean OR jsonb_array_length(person->'entries')=0
+      OR person->'entries' ? entryid::text
+      OR (p_plan->'items'->(i-1)->>'kind'='transition' AND person->'entries' ? ord[i/2]::text)
+      OR (p_plan->'items'->(i+1)->>'kind'='transition' AND person->'entries' ? ord[i/2+2]::text)
+      OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(staff) WITH ORDINALITY s(v,k) WHERE v=pid AND k<>j+1)
+      OR ((person->>'year')::integer=1 AND (partner->>'year')::integer=1);
+     IF coalesce(violation,false) AND (coalesce(p_automatic,false) OR NOT coalesce(p_allow_exceptions,false)) THEN RAISE EXCEPTION '係の条件違反があります。例外として保存する確認が必要です'; END IF;
+    END LOOP;
+   canonical:=jsonb_build_object('kind','performance','entry',entryid,'name',bandname,'available',windows,'minutes',duration,'staff',staff);
+  ELSE
+   IF item->>'kind' NOT IN ('transition','break') OR item->>'kind' IS NULL THEN RAISE EXCEPTION '転換・休憩が不正です'; END IF;
+   canonical:=jsonb_build_object('kind',item->>'kind','minutes',duration,'staff','[]'::jsonb);
+  END IF;
+  items:=items||jsonb_build_array(canonical); minute:=minute+duration; i:=i+1;
+ END LOOP;
+ RETURN jsonb_build_object('staff_scope','band','date',p_plan->>'date','pa',(p_plan->>'pa')::integer,'gather',(p_plan->>'gather')::integer,
+  'start',(p_plan->>'start')::integer,'items',items,'people',people);
+END $$;
+
+CREATE OR REPLACE FUNCTION public.od_person_schedule(p_plan jsonb,p_user uuid)
+RETURNS jsonb LANGUAGE plpgsql IMMUTABLE SET search_path='' AS $$
+DECLARE result jsonb:='[]'; item jsonb; person jsonb; minute integer; j integer;
+BEGIN
+ IF p_plan IS NULL THEN RETURN result; END IF;
+ SELECT value INTO person FROM jsonb_array_elements(p_plan->'people') WHERE value->>'id'=p_user::text;
+ minute:=(p_plan->>'start')::integer;
+ FOR item IN SELECT value FROM jsonb_array_elements(p_plan->'items') LOOP
+  IF item->>'kind'='performance' AND person->'entries' ? (item->>'entry') THEN
+   result:=result||jsonb_build_array(jsonb_build_object('role',item->>'name','start',minute,'end',minute+(item->>'minutes')::integer));
+  END IF;
+  IF item->>'kind'=(CASE WHEN p_plan->>'staff_scope'='band' THEN 'performance' ELSE 'transition' END) THEN
+   FOR j IN 0..3 LOOP
+    IF item->'staff'->>j=p_user::text THEN result:=result||jsonb_build_array(jsonb_build_object('role',
+     CASE WHEN j<2 THEN 'ローディー' ELSE 'タイムキーパー' END || CASE WHEN p_plan->>'staff_scope'='band' THEN '（'||(item->>'name')||'）' ELSE '' END,
+     'start',minute,'end',minute+(item->>'minutes')::integer)); END IF;
+   END LOOP;
+  END IF;
+  minute:=minute+(item->>'minutes')::integer;
+ END LOOP;
+ RETURN jsonb_build_object('date',p_plan->>'date','pa',p_plan->'pa','gather',p_plan->'gather','schedule',result);
+END $$;
+
+CREATE OR REPLACE FUNCTION public.od_timetable_save(p_audition_id uuid,p_plan jsonb,p_revision integer,p_publish boolean DEFAULT false,p_allow_exceptions boolean DEFAULT false,p_automatic boolean DEFAULT false)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE t public.od_timetables; plan jsonb; datevalue date; deadline timestamptz; ord uuid[]; eid uuid; u record; beforevalue jsonb; aftervalue jsonb;
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ -- All related mutations take the audition lock first, preventing publication races.
+ SELECT entry_deadline INTO deadline FROM public.auditions WHERE id=p_audition_id FOR UPDATE;
+ IF deadline IS NULL OR now()<deadline THEN RAISE EXCEPTION 'エントリー締切後に生成できます'; END IF;
+ SELECT entry_order INTO ord FROM public.audition_timetable_sources WHERE audition_id=p_audition_id;
+ IF ord IS NULL THEN RAISE EXCEPTION 'OD側で演奏順を確定してください'; END IF;
+ SELECT * INTO t FROM public.od_timetables WHERE audition_id=p_audition_id FOR UPDATE;
+ IF t.event_date<(now() AT TIME ZONE 'Asia/Tokyo')::date THEN RAISE EXCEPTION '過去ODは編集できません'; END IF;
+ IF coalesce(t.revision,0) IS DISTINCT FROM p_revision THEN RAISE EXCEPTION '他の操作で更新されました。再読み込みしてください'; END IF;
+ datevalue:=(p_plan->>'date')::date;
+ IF datevalue IS NULL OR datevalue<(now() AT TIME ZONE 'Asia/Tokyo')::date THEN RAISE EXCEPTION '開催日は本日以降を指定してください'; END IF;
+ plan:=public.od_timetable_validate(p_audition_id,p_plan,p_allow_exceptions,p_automatic);
+ IF t.audition_id IS NULL AND (jsonb_array_length(plan->'items')<>(SELECT count(*)*2-1 FROM public.audition_entries WHERE audition_id=p_audition_id)) THEN RAISE EXCEPTION '確定演奏順が古くなっています'; END IF;
+ INSERT INTO public.od_timetables(audition_id,event_date,draft,revision) VALUES(p_audition_id,datevalue,plan,1)
+ ON CONFLICT(audition_id) DO UPDATE SET event_date=datevalue,draft=plan,revision=public.od_timetables.revision+1;
+ IF coalesce(p_publish,false) THEN
+  INSERT INTO public.od_publication_events(audition_id,publication) VALUES(p_audition_id,coalesce(t.publication,0)+1) RETURNING id INTO eid;
+  FOR u IN SELECT id FROM public.profiles WHERE member_status='active' OR id IN (
+   SELECT (s.pid #>> '{}')::uuid FROM jsonb_array_elements(coalesce(t.published->'items','[]')) it,
+    LATERAL jsonb_array_elements(coalesce(it->'staff','[]')) s(pid) WHERE s.pid<>'null'::jsonb)
+   OR id IN (SELECT (p->>'id')::uuid FROM jsonb_array_elements(coalesce(t.published->'people','[]')) p WHERE jsonb_array_length(p->'entries')>0)
+   OR id IN (SELECT (p->>'id')::uuid FROM jsonb_array_elements(plan->'people') p WHERE jsonb_array_length(p->'entries')>0)
+   OR id IN (SELECT (s.pid #>> '{}')::uuid FROM jsonb_array_elements(plan->'items') it,
+    LATERAL jsonb_array_elements(coalesce(it->'staff','[]')) s(pid) WHERE s.pid<>'null'::jsonb)
+  LOOP
+   beforevalue:=public.od_person_schedule(t.published,u.id); aftervalue:=public.od_person_schedule(plan,u.id);
+   INSERT INTO public.od_timetable_notifications(event_id,user_id,message,before_schedule,after_schedule)
+   VALUES(eid,u.id,CASE WHEN t.published IS NULL THEN 'ODタイムテーブルが公開されました。' WHEN beforevalue IS DISTINCT FROM aftervalue THEN 'ODタイムテーブルが再公開され、あなたの予定に変更があります。' ELSE 'ODタイムテーブルが再公開されました。' END,beforevalue,aftervalue);
+  END LOOP;
+  -- Public snapshots contain identities needed to read the table, not private eligibility data.
+  SELECT jsonb_set(plan,'{people}',coalesce(jsonb_agg(jsonb_build_object('id',p->'id','name',p->'name','entries',p->'entries')),'[]')) INTO plan
+   FROM jsonb_array_elements(plan->'people') p WHERE jsonb_array_length(p->'entries')>0 OR EXISTS(
+    SELECT 1 FROM jsonb_array_elements(plan->'items') it WHERE it->'staff' ? (p->>'id'));
+  UPDATE public.od_timetables SET published=plan,publication=coalesce(t.publication,0)+1,published_at=now() WHERE audition_id=p_audition_id;
+ END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.od_set_role_exclusion(p_role_id bigint,p_excluded boolean)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+BEGIN
+ IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ操作できます'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM public.circle_roles_list() r WHERE r.id=p_role_id) THEN RAISE EXCEPTION '役職がありません'; END IF;
+ IF p_excluded IS NULL THEN RAISE EXCEPTION '対象外設定が不正です'; END IF;
+ INSERT INTO public.od_staff_role_settings VALUES(p_role_id,p_excluded) ON CONFLICT(role_id) DO UPDATE SET excluded=EXCLUDED.excluded;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.od_timetable_participation(p_audition_id uuid,p_user_id uuid,p_registered boolean)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE t public.od_timetables; item jsonb; items jsonb:='[]'; staff jsonb; pid jsonb;
+BEGIN
+ PERFORM 1 FROM public.auditions WHERE id=p_audition_id AND status<>'draft' FOR UPDATE;
+ IF NOT FOUND OR auth.uid() IS NULL THEN RAISE EXCEPTION '操作できません'; END IF;
+ SELECT * INTO t FROM public.od_timetables WHERE audition_id=p_audition_id FOR UPDATE;
+ IF t.event_date<(now() AT TIME ZONE 'Asia/Tokyo')::date THEN RAISE EXCEPTION '過去ODは変更できません'; END IF;
+ IF NOT public.is_circle_president() AND (p_user_id IS DISTINCT FROM auth.uid() OR (NOT coalesce(p_registered,false) AND t.published IS NOT NULL)) THEN RAISE EXCEPTION '公開後の参加取消は部長のみ操作できます'; END IF;
+ IF p_registered THEN
+  IF NOT EXISTS(SELECT 1 FROM public.auditions WHERE id=p_audition_id AND status='open' AND now()<entry_deadline) THEN RAISE EXCEPTION '参加登録期間外です'; END IF;
+  INSERT INTO public.audition_participants VALUES(p_audition_id,p_user_id) ON CONFLICT DO NOTHING;
+ ELSE
+  DELETE FROM public.audition_participants WHERE audition_id=p_audition_id AND user_id=p_user_id;
+ END IF;
+END $$;
+
+-- Also cover cancellation from any existing privileged code path.
+CREATE OR REPLACE FUNCTION public.od_participant_deleted()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE t public.od_timetables; item jsonb; items jsonb:='[]'; staff jsonb; pid jsonb;
+BEGIN
+ SELECT * INTO t FROM public.od_timetables WHERE audition_id=OLD.audition_id FOR UPDATE;
+ IF t.audition_id IS NULL THEN RETURN OLD; END IF;
+ FOR item IN SELECT value FROM jsonb_array_elements(t.draft->'items') LOOP
+  IF jsonb_typeof(item->'staff')='array' THEN
+   staff:='[]';
+   FOR pid IN SELECT value FROM jsonb_array_elements(item->'staff') LOOP
+    staff:=staff||jsonb_build_array(CASE WHEN pid #>> '{}' = OLD.user_id::text THEN 'null'::jsonb ELSE pid END);
+   END LOOP;
+   item:=jsonb_set(item,'{staff}',staff);
+  END IF;
+  items:=items||jsonb_build_array(item);
+ END LOOP;
+ UPDATE public.od_timetables SET draft=jsonb_set(draft,'{items}',items),revision=revision+1 WHERE audition_id=OLD.audition_id;
+ RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS od_participant_deleted ON public.audition_participants;
+CREATE TRIGGER od_participant_deleted AFTER DELETE ON public.audition_participants FOR EACH ROW EXECUTE FUNCTION public.od_participant_deleted();
+-- No direct DML bypass of publication cancellation restrictions.
+REVOKE INSERT,UPDATE,DELETE ON public.audition_participants FROM authenticated,anon;
+
+CREATE OR REPLACE FUNCTION public.od_preserve_archive()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+BEGIN
+ IF EXISTS(SELECT 1 FROM public.od_timetables WHERE audition_id=OLD.id AND published IS NOT NULL
+  AND event_date<(now() AT TIME ZONE 'Asia/Tokyo')::date) THEN RAISE EXCEPTION '過去ODの公開タイムテーブルは保存されるため削除できません'; END IF;
+ RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS od_preserve_archive ON public.auditions;
+CREATE TRIGGER od_preserve_archive BEFORE DELETE ON public.auditions FOR EACH ROW EXECUTE FUNCTION public.od_preserve_archive();
+
+CREATE OR REPLACE FUNCTION public.od_timetable_inbox()
+RETURNS TABLE(event_id uuid,audition_id uuid,title text,message text,before_schedule jsonb,after_schedule jsonb,created_at timestamptz)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path='' AS $$
+ SELECT e.id,e.audition_id,a.title,n.message,n.before_schedule,n.after_schedule,e.created_at
+ FROM public.od_timetable_notifications n JOIN public.od_publication_events e ON e.id=n.event_id
+ JOIN public.auditions a ON a.id=e.audition_id WHERE n.user_id=auth.uid() ORDER BY e.created_at DESC LIMIT 100;
+$$;
+
+-- Restrict every new RPC, including helper functions, explicitly.
+DO $$ DECLARE f record; BEGIN
+ FOR f IN SELECT p.oid::regprocedure AS signature FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='public' AND p.proname IN ('od_timetable_people','audition_confirm_order','audition_set_availability','od_timetable_context','od_timetable_validate','od_person_schedule','od_timetable_save','od_set_role_exclusion','od_timetable_participation','od_participant_deleted','od_timetable_inbox','od_preserve_archive') LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,anon,authenticated',f.signature);
+  IF f.signature::text NOT LIKE 'od_person_schedule(%' AND f.signature::text NOT LIKE 'od_participant_deleted(%' AND f.signature::text NOT LIKE 'od_preserve_archive(%' THEN
+   EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO authenticated',f.signature);
+  END IF;
+ END LOOP;
+END $$;
+
+-- Section: ui_update.sql
+DO $$ BEGIN
+ IF to_regprocedure('public.profile_context()') IS NULL THEN
+  RAISE EXCEPTION '既存のprofile_context()を先に用意してください';
+ END IF;
+END $$;
+ALTER TABLE public.auditions ADD COLUMN IF NOT EXISTS event_date date;
+CREATE TABLE IF NOT EXISTS public.schedules (
+ user_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+ schedule_date date NOT NULL, slot integer NOT NULL CHECK(slot BETWEEN 1 AND 8),
+ available boolean NOT NULL DEFAULT false,
+ PRIMARY KEY(user_id,schedule_date,slot)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ui_schedule_cell ON public.schedules(user_id,schedule_date,slot);
+ALTER TABLE public.schedules ENABLE ROW LEVEL SECURITY;
+-- Keep existing band-schedule read policies. Writes from this UI use the authenticated RPC.
+GRANT SELECT ON public.schedules TO authenticated;
+DROP POLICY IF EXISTS ui_schedule_self_read ON public.schedules;
+CREATE POLICY ui_schedule_self_read ON public.schedules FOR SELECT TO authenticated USING(user_id=auth.uid());
+CREATE TABLE IF NOT EXISTS public.ui_notices (
+ id uuid PRIMARY KEY, title text NOT NULL, body text NOT NULL,
+ created_by uuid NOT NULL REFERENCES public.profiles(id),
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS public.ui_event_notifications (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+ title text NOT NULL, body text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), read_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS ui_notification_user ON public.ui_event_notifications(user_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS public.ui_timetable_reads (
+ event_id uuid NOT NULL REFERENCES public.od_publication_events(id) ON DELETE CASCADE,
+ user_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+ read_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(event_id,user_id)
+);
+ALTER TABLE public.ui_notices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ui_event_notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ui_timetable_reads ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.ui_notices,public.ui_event_notifications,public.ui_timetable_reads FROM PUBLIC,anon,authenticated;
+
+CREATE OR REPLACE FUNCTION public.ui_can_post() RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path='' AS $$
+ SELECT auth.uid() IS NOT NULL AND (public.is_circle_president()
+  OR coalesce((to_jsonb(public.profile_context())->>'is_site_admin')::boolean,false));
+$$;
+CREATE OR REPLACE FUNCTION public.ui_schedule_save(p_date date,p_slot integer,p_available boolean) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ IF p_date IS NULL OR p_slot IS NULL OR p_slot NOT BETWEEN 1 AND 8 OR p_available IS NULL THEN
+  RAISE EXCEPTION '日付・時間枠・参加可否が不正です'; END IF;
+ INSERT INTO public.schedules(user_id,schedule_date,slot,available) VALUES(auth.uid(),p_date,p_slot,p_available)
+ ON CONFLICT(user_id,schedule_date,slot) DO UPDATE SET available=excluded.available;
+END $$;
+CREATE OR REPLACE FUNCTION public.ui_notice_save(p_id uuid,p_title text,p_body text) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+BEGIN
+ IF NOT public.ui_can_post() THEN RAISE EXCEPTION '部長またはサイト管理者のみ操作できます'; END IF;
+ IF p_id IS NULL OR nullif(trim(p_title),'') IS NULL OR length(p_title)>100
+  OR nullif(trim(p_body),'') IS NULL OR length(p_body)>10000 THEN RAISE EXCEPTION 'タイトル・本文を確認してください'; END IF;
+ INSERT INTO public.ui_notices(id,title,body,created_by) VALUES(p_id,trim(p_title),p_body,auth.uid())
+ ON CONFLICT(id) DO UPDATE SET title=excluded.title,body=excluded.body,updated_at=now();
+END $$;
+CREATE OR REPLACE FUNCTION public.ui_notice_delete(p_id uuid) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+BEGIN
+ IF NOT public.ui_can_post() THEN RAISE EXCEPTION '部長またはサイト管理者のみ操作できます'; END IF;
+ DELETE FROM public.ui_notices WHERE id=p_id;
+END $$;
+CREATE OR REPLACE FUNCTION public.ui_notifications()
+RETURNS TABLE(id uuid,title text,body text,created_at timestamptz,read_at timestamptz)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path='' AS $$
+ SELECT n.id,n.title,n.body,n.created_at,n.read_at FROM public.ui_event_notifications n WHERE n.user_id=auth.uid()
+ UNION ALL
+ SELECT e.id,a.title,n.message,e.created_at,r.read_at
+ FROM public.od_timetable_notifications n JOIN public.od_publication_events e ON e.id=n.event_id
+ JOIN public.auditions a ON a.id=e.audition_id
+ LEFT JOIN public.ui_timetable_reads r ON r.event_id=e.id AND r.user_id=auth.uid()
+ WHERE n.user_id=auth.uid() ORDER BY created_at DESC,id;
+$$;
+CREATE OR REPLACE FUNCTION public.ui_notifications_read(p_ids uuid[]) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ UPDATE public.ui_event_notifications SET read_at=coalesce(read_at,now()) WHERE user_id=auth.uid() AND id=ANY(p_ids);
+ INSERT INTO public.ui_timetable_reads(event_id,user_id)
+ SELECT event_id,auth.uid() FROM public.od_timetable_notifications WHERE user_id=auth.uid() AND event_id=ANY(p_ids)
+ ON CONFLICT DO NOTHING;
+END $$;
+CREATE OR REPLACE FUNCTION public.ui_dashboard() RETURNS jsonb
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path='' AS $$
+DECLARE result jsonb;
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ SELECT jsonb_build_object(
+  'can_post',public.ui_can_post(),
+  'events',coalesce((SELECT jsonb_agg(x ORDER BY x.event_date NULLS LAST,x.entry_deadline NULLS LAST) FROM (
+   SELECT a.id,a.title,coalesce(a.event_date,t.event_date) event_date,
+    CASE WHEN a.status='open' AND a.entry_deadline>now() THEN a.entry_deadline END entry_deadline,
+    CASE WHEN a.status IN ('open','scoring') AND a.scoring_deadline>now() THEN a.scoring_deadline END scoring_deadline
+   FROM public.auditions a LEFT JOIN public.od_timetables t ON t.audition_id=a.id
+   WHERE a.status IN ('open','scoring','closed')
+    AND (coalesce(a.event_date,t.event_date) IS NULL OR coalesce(a.event_date,t.event_date)>=(now() AT TIME ZONE 'Asia/Tokyo')::date)
+  ) x),'[]'::jsonb),
+  'notices',coalesce((SELECT jsonb_agg(n ORDER BY n.created_at DESC,n.id) FROM public.ui_notices n),'[]'::jsonb),
+  'unread',(SELECT count(*) FROM public.ui_notifications() WHERE read_at IS NULL)
+ ) INTO result;
+ RETURN result;
+END $$;
+
+-- Status changes and their notifications commit together; repeated unchanged updates emit nothing.
+CREATE OR REPLACE FUNCTION public.ui_audition_notification() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+BEGIN
+ IF NEW.status IS DISTINCT FROM OLD.status AND NEW.status IN ('open','published') THEN
+  INSERT INTO public.ui_event_notifications(user_id,title,body)
+  SELECT id,NEW.title,CASE NEW.status WHEN 'open' THEN 'エントリー受付が始まりました。' ELSE 'オーディション結果が公開されました。' END
+  FROM public.profiles WHERE member_status='active' OR id IN (
+   SELECT user_id FROM public.audition_participants WHERE audition_id=NEW.id);
+ END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS ui_audition_notification ON public.auditions;
+CREATE TRIGGER ui_audition_notification AFTER UPDATE OF status ON public.auditions
+ FOR EACH ROW EXECUTE FUNCTION public.ui_audition_notification();
+DO $$ DECLARE f record; BEGIN
+ FOR f IN SELECT p.oid::regprocedure signature,p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE n.nspname='public' AND p.proname IN ('ui_can_post','ui_schedule_save','ui_notice_save','ui_notice_delete',
+   'ui_notifications','ui_notifications_read','ui_dashboard','ui_audition_notification') LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,anon,authenticated',f.signature);
+  IF f.proname<>'ui_audition_notification' THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO authenticated',f.signature); END IF;
+ END LOOP;
+END $$;
+
 COMMIT;

@@ -10,12 +10,7 @@ test('UI migration, notices, schedules and notification authorization',async t=>
  const user=async n=>{await db.exec('RESET ROLE');await q("SELECT set_config('request.jwt.claim.sub',$1,false)",[n?id(n):'']);await db.exec('SET ROLE authenticated');};
  try {
   await db.exec(await read('tests/fixtures/database.sql'));
-  for(const f of ['setup.sql','update.sql','entry_rules_update.sql','previous_live_update.sql','consistency_update.sql'])await db.exec(await read(f));
-  await db.exec(`CREATE FUNCTION circle_roles_list() RETURNS TABLE(id bigint,name text,exclude_from_staff_auto_assign boolean) LANGUAGE sql AS $$ SELECT 1::bigint,'role'::text,false WHERE false $$;
-   CREATE FUNCTION circle_members_admin() RETURNS TABLE(user_id uuid,role_ids bigint[]) LANGUAGE sql AS $$ SELECT id,'{}'::bigint[] FROM public.profiles $$;
-   CREATE FUNCTION profile_context() RETURNS jsonb LANGUAGE sql AS $$ SELECT jsonb_build_object('is_site_admin',auth.uid()='${id(2)}'::uuid) $$;`);
-  await db.exec(await read('timetable_update.sql'));
-  await db.exec(await read('ui_update.sql'));await db.exec(await read('ui_update.sql'));
+  await db.exec(await read('setup.sql'));await db.exec(await read('setup.sql'));
   await q("INSERT INTO profiles(id,username) VALUES($1,'部長'),($2,'サイト管理者'),($3,'一般'),($4,'別の一般')",[1,2,3,4].map(id));
   await q('INSERT INTO circle_president(user_id) VALUES($1)',[id(1)]);
   await t.test('members cannot post or access underlying notice/notification tables',async()=>{
@@ -57,7 +52,7 @@ test('UI migration, notices, schedules and notification authorization',async t=>
    await user(4);await q('SELECT ui_notifications_read($1::uuid[])',[[id(300)]]);
    await user(3);assert.equal((await scalar('SELECT ui_dashboard()')).unread,1);
    await q('SELECT ui_notifications_read($1::uuid[])',[[id(300)]]);assert.equal((await scalar('SELECT ui_dashboard()')).unread,0);
-   await db.exec('RESET ROLE');await db.exec(await read('ui_update.sql'));await user(3);
+   await db.exec('RESET ROLE');await db.exec(await read('setup.sql'));await user(3);
    assert.equal((await scalar('SELECT ui_dashboard()')).unread,0);
   });
   await t.test('anonymous users cannot execute RPCs or spoof the notification trigger',async()=>{

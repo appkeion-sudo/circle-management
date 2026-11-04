@@ -12,13 +12,7 @@ test('timetable migration, authorization, publication snapshots, cancellation, a
  const owner=()=>db.exec('RESET ROLE');
  try{
   await db.exec(await read('tests/fixtures/database.sql'));
-  for(const f of ['setup.sql','update.sql','entry_rules_update.sql','previous_live_update.sql','consistency_update.sql'])await db.exec(await read(f));
-  // Contracts of the existing profile/role RPCs (their production tables are not in this repo).
-  await db.exec(`CREATE TABLE test_roles(id bigint PRIMARY KEY,name text,exclude_from_staff_auto_assign boolean);
-   CREATE TABLE test_member_roles(user_id uuid,role_id bigint);
-   CREATE FUNCTION circle_roles_list() RETURNS TABLE(id bigint,name text,exclude_from_staff_auto_assign boolean) LANGUAGE sql AS $$ SELECT * FROM public.test_roles $$;
-   CREATE FUNCTION circle_members_admin() RETURNS TABLE(user_id uuid,role_ids bigint[]) LANGUAGE sql AS $$ SELECT p.id,coalesce(array_agg(r.role_id) FILTER(WHERE r.role_id IS NOT NULL),'{}'::bigint[]) FROM public.profiles p LEFT JOIN public.test_member_roles r ON r.user_id=p.id GROUP BY p.id $$;`);
-  await db.exec(await read('timetable_update.sql'));await db.exec(await read('timetable_update.sql'));
+  await db.exec(await read('setup.sql'));await db.exec(await read('setup.sql'));
   await q("INSERT INTO profiles(id,username,admission_year) SELECT ('00000000-0000-0000-0000-'||lpad(n::text,12,'0'))::uuid,'User'||n,2025 FROM generate_series(1,8) n");
   await q('INSERT INTO circle_president(user_id) VALUES($1)',[id(1)]);
   const aid=id(100),entries=[201,202,203].map(id);
@@ -98,7 +92,7 @@ test('timetable migration, authorization, publication snapshots, cancellation, a
    await user(5);const inbox=await q('SELECT * FROM od_timetable_inbox()');assert.ok(inbox[0].before_schedule.schedule.some(s=>s.role==='ローディー（Band0）'));assert.ok(!inbox[0].after_schedule.schedule.some(s=>s.role==='ローディー（Band0）'));await user(1);
   });
   await t.test('SQL reapplication retains both existing versions; legacy publication schedules remain compatible',async()=>{
-   const before=await context();await owner();await db.exec(await read('timetable_update.sql'));await user(1);
+   const before=await context();await owner();await db.exec(await read('setup.sql'));await user(1);
    const after=await context();assert.deepEqual(after.published,before.published);assert.deepEqual(after.draft,before.draft);assert.equal(after.revision,before.revision);
    const legacy=structuredClone(before.published);delete legacy.staff_scope;legacy.items[1].staff=[id(5),null,null,null];legacy.items[0].staff=[];
    await owner();const schedule=await scalar('SELECT od_person_schedule($1::jsonb,$2)',[JSON.stringify(legacy),id(5)]);assert.ok(schedule.schedule.some(s=>s.role==='ローディー'&&s.start===620));

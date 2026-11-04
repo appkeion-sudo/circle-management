@@ -26,12 +26,9 @@ test('database migration and authorization regressions', async t => {
   };
   try {
     await db.exec(await read('tests/fixtures/database.sql'));
-    for (const name of ['setup.sql','update.sql','entry_rules_update.sql','previous_live_update.sql']) {
-      await db.exec(await read(name));
-    }
-    await db.exec(await read('consistency_update.sql'));
+    await db.exec(await read('setup.sql'));
     // Migration must be safe to reapply after an interrupted deployment.
-    await db.exec(await read('consistency_update.sql'));
+    await db.exec(await read('setup.sql'));
     await query(`INSERT INTO profiles(id,username,admission_year) VALUES
       ($1,'部長',2026),($2,'新入生',2026),($3,'先輩',2025),($4,'採点者',2025),($5,'未登録',NULL)`,
     [1,2,3,4,5].map(id));

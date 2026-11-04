@@ -92,3 +92,17 @@ CREATE POLICY auditions_update ON public.auditions FOR UPDATE TO authenticated
 USING(public.is_circle_president()) WITH CHECK(public.is_circle_president());
 CREATE POLICY bands_select ON public.bands FOR SELECT TO authenticated USING(public.is_band_member(id));
 CREATE POLICY band_members_select ON public.band_members FOR SELECT TO authenticated USING(public.is_band_member(band_id));
+
+-- Contracts of existing profile/role RPCs used by the consolidated migration.
+CREATE TABLE public.test_roles(id bigint PRIMARY KEY,name text,exclude_from_staff_auto_assign boolean);
+CREATE TABLE public.test_member_roles(user_id uuid,role_id bigint);
+CREATE FUNCTION public.circle_roles_list() RETURNS TABLE(id bigint,name text,exclude_from_staff_auto_assign boolean)
+LANGUAGE sql AS $$ SELECT * FROM public.test_roles $$;
+CREATE FUNCTION public.circle_members_admin() RETURNS TABLE(user_id uuid,role_ids bigint[])
+LANGUAGE sql AS $$
+ SELECT p.id,coalesce(array_agg(r.role_id) FILTER(WHERE r.role_id IS NOT NULL),'{}'::bigint[])
+ FROM public.profiles p LEFT JOIN public.test_member_roles r ON r.user_id=p.id GROUP BY p.id
+$$;
+CREATE FUNCTION public.profile_context() RETURNS jsonb LANGUAGE sql AS $$
+ SELECT jsonb_build_object('is_site_admin',auth.uid()='00000000-0000-0000-0000-000000000002'::uuid)
+$$;
