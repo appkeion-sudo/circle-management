@@ -14,33 +14,14 @@
     return;
   }
 
-  // 役職表示欄を作成
-  const rolesBox = document.createElement("div");
-  rolesBox.id = "profile-roles-box";
-
-  const heading = document.createElement("h3");
-  heading.textContent = "サークル内の役職";
-
-  const rolesContainer = document.createElement("div");
-  rolesContainer.id = "profile-roles";
-
-  rolesBox.append(heading, rolesContainer);
-
-  // 権限表示の直後に追加
-  const privileges = document.getElementById(
-    "profile-privileges"
-  );
-
-  const privilegesParagraph = privileges?.closest("p");
-
-  if (privilegesParagraph) {
-    privilegesParagraph.after(rolesBox);
-  } else {
-    profileSection.appendChild(rolesBox);
-  }
+  // HTMLにある表示欄を再利用し、同じIDの要素を追加しない。
+  const rolesContainer = document.getElementById("profile-roles");
+  if (!rolesContainer) return;
+  let rolesVersion = 0;
 
   // 自分に割り当てられた役職を取得
   async function loadMyRoles() {
+    const version = ++rolesVersion;
     rolesContainer.textContent = "読み込み中...";
 
     try {
@@ -51,6 +32,8 @@
       if (error) {
         throw error;
       }
+
+      if (version !== rolesVersion) return;
 
       rolesContainer.replaceChildren();
 
@@ -69,6 +52,7 @@
       }
 
     } catch (error) {
+      if (version !== rolesVersion) return;
       rolesContainer.textContent =
         "役職の取得に失敗しました：" + error.message;
 
@@ -85,6 +69,7 @@
   // ログアウト時に表示を消す
   db.auth.onAuthStateChange(event => {
     if (event === "SIGNED_OUT") {
+      rolesVersion++;
       rolesContainer.replaceChildren();
     }
   });

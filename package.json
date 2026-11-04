@@ -1,0 +1,12 @@
+{
+  "name": "keion-circle",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:frontend": "node --test tests/frontend.test.mjs",
+    "test:browser": "node tests/browser-smoke.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.13"
+  }
+}

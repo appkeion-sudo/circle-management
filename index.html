@@ -7,6 +7,9 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <header id="app-header" hidden><button id="sidebar-toggle" type="button" aria-label="メニューを開閉" aria-controls="sidebar" aria-expanded="false">☰</button><strong>Keion Circle ♫</strong><button id="notification-bell" type="button" aria-label="通知">🔔 <span id="notification-count">0</span></button></header>
+  <button id="sidebar-backdrop" type="button" aria-label="メニューを閉じる" hidden></button>
+  <nav id="sidebar" aria-label="メインメニュー" hidden></nav>
   <main>
     <h1>軽音サークル管理</h1>
 
@@ -44,6 +47,8 @@
     <section id="home-section" hidden>
       <h2>ホーム</h2>
       <p id="welcome"></p>
+      <div class="dashboard-top"><article><h3>★ 次回オーディション</h3><p id="dashboard-next"></p></article><article><h3>◷ エントリー・採点の締切</h3><div id="dashboard-deadlines"></div></article></div>
+      <article><h3>お知らせ</h3><div id="dashboard-notices"></div><button id="notice-all" type="button" class="secondary-button">すべて見る</button><button id="notice-manage" type="button" hidden>お知らせ管理</button></article>
 
       <div class="home-menu">
         <button id="open-schedule-button" type="button">
@@ -55,6 +60,7 @@
         </button>
 
         <button id="open-audition-button" type="button">オーディション</button>
+        <button id="open-timetable-button" type="button">ODタイムテーブル</button>
         <button id="open-feedback-button" type="button">感想</button>
 
         <button id="open-profile-button" type="button">
@@ -66,11 +72,18 @@
         </button>
       </div>
 
+      <div id="timetable-inbox" aria-live="polite"></div>
       <button id="logout-button"
         type="button"
         class="secondary-button">
         ログアウト
       </button>
+    </section>
+
+    <section id="timetable-section" hidden>
+      <button id="timetable-home" type="button" class="secondary-button">← ホーム</button>
+      <div id="timetable-body"></div>
+      <p id="timetable-message" role="status"></p>
     </section>
 
     <!-- MYスケジュール -->
@@ -104,7 +117,7 @@
 
       <div id="schedule-results" hidden>
         <p id="selected-range"></p>
-        <p class="schedule-help">マスをタップ：－ ↔ 〇</p>
+        <p class="schedule-help">マスをタップ：ー ↔ ○（自動保存）</p>
 
         <div class="schedule-container">
           <table id="schedule-table">
@@ -338,7 +351,7 @@
 
         <p class="hint">
           登録済みの入学年度を変更するには、
-          部長またはサイト管理者の承認が必要です。
+          部長の承認が必要です。
         </p>
 
         <form id="profile-request-form">
@@ -494,10 +507,15 @@
   <!-- JavaScript -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="app.js"></script>
+  <script src="autosave.js"></script>
+  <script src="ui.js"></script>
   <script src="schedule.js"></script>
   <script src="band.js"></script>
   <script src="profile.js"></script>
   <script src="profile-roles.js"></script>
   <script src="audition.js"></script>
+  <script src="timetable-core.js"></script>
+  <script src="timetable-export.js"></script>
+  <script src="timetable.js"></script>
 </body>
 </html>

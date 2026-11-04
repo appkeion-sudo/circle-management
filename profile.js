@@ -3,17 +3,6 @@
 (() => {
   const $ = id => document.getElementById(id);
 
-  const pageIds = [
-    "home-section",
-    "schedule-section",
-    "band-section",
-    "band-create-section",
-    "band-leave-section",
-    "band-detail-section",
-    "profile-section",
-    "admin-section"
-  ];
-
   let context = null;
   let members = [];
   let roles = [];
@@ -29,9 +18,7 @@
   function showProfilePage(pageId) {
     requestVersion++;
 
-    for (const id of pageIds) {
-      $(id).hidden = id !== pageId;
-    }
+    showPage(pageId);
   }
 
   function makeElement(tag, text, className) {

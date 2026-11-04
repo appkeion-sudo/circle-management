@@ -27,6 +27,7 @@ const passwordInput = document.getElementById("password");
 const usernameInput = document.getElementById("username");
 
 const PAGE_IDS = [
+  "timetable-section",
   "home-section",
   "schedule-section",
   "band-section",
@@ -64,6 +65,7 @@ function showPage(pageId) {
       section.hidden = id !== pageId;
     }
   }
+  document.dispatchEvent(new CustomEvent('circle-page-change', {detail:pageId}));
 }
 
 // 現在表示されている画面を取得
@@ -126,6 +128,7 @@ async function updateScreen() {
     authSection.hidden = false;
 
     showPage(null);
+    document.dispatchEvent(new Event('circle-session-ready'));
 
     document.getElementById(
       "open-admin-button"
@@ -186,6 +189,7 @@ async function updateScreen() {
   if (!getVisiblePage()) {
     showPage("home-section");
   }
+  document.dispatchEvent(new Event('circle-session-ready'));
 }
 
 // ==========================================

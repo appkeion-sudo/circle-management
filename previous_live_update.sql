@@ -66,9 +66,14 @@ BEGIN
   WHERE e.audition_id=p_audition_id AND e.band_id<>p_band_id
   GROUP BY e.id HAVING count(DISTINCT bm.user_id)>=3
  ) THEN RAISE EXCEPTION '他のエントリーバンドとメンバーが3人以上重複しています'; END IF;
- -- Interim first-year definition: all members admitted in the calendar year of entry deadline.
- SELECT coalesce(bool_and(coalesce(p.year_override,p.admission_year)=extract(year from v_deadline)::integer),false)
- INTO v_fresh FROM public.band_members bm JOIN public.profiles p ON p.id=bm.user_id WHERE bm.band_id=p_band_id;
+ -- April-based school year in Japan, with explicit grade overrides.
+ SELECT coalesce(bool_and(coalesce(
+   coalesce(p.year_override,
+     extract(year from v_deadline AT TIME ZONE 'Asia/Tokyo')::integer
+     - CASE WHEN extract(month from v_deadline AT TIME ZONE 'Asia/Tokyo') < 4 THEN 1 ELSE 0 END
+     - p.admission_year + 1) = 1,
+   false)),false)
+ INTO v_fresh FROM public.band_members bm LEFT JOIN public.profiles p ON p.id=bm.user_id WHERE bm.band_id=p_band_id;
  INSERT INTO public.audition_entries(audition_id,band_id,entered_by,is_freshman_band)
  VALUES(p_audition_id,p_band_id,auth.uid(),v_fresh)
  ON CONFLICT(audition_id,band_id) DO UPDATE SET band_id=EXCLUDED.band_id RETURNING id INTO v_id;

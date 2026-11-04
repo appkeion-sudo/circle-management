@@ -4,12 +4,6 @@
 (() => {
   const $ = id => document.getElementById(id);
 
-  const PAGES = [
-    "home-section", "schedule-section", "band-section",
-    "band-create-section", "band-leave-section",
-    "band-detail-section", "profile-section", "admin-section"
-  ];
-
   const SLOTS = [1, 2, 3, 4, 5, 6, 7, 8];
 
   const SLOT_LABELS = {
@@ -35,10 +29,7 @@
   let previewUrl = null;
 
   function page(id) {
-    for (const pageId of PAGES) {
-      const section = $(pageId);
-      if (section) section.hidden = pageId !== id;
-    }
+    showPage(id);
   }
 
   function message(id, text) {
@@ -167,16 +158,11 @@
   async function iconUrl(path) {
     if (!path) return null;
 
-    const { data, error } = await db.storage
+    const { data } = db.storage
       .from(ICON_BUCKET)
-      .createSignedUrl(path, 3600);
+      .getPublicUrl(path);
 
-    if (error) {
-      console.warn("アイコン取得エラー:", error.message);
-      return null;
-    }
-
-    return data.signedUrl;
+    return data.publicUrl;
   }
 
   async function renderBandList() {
@@ -402,24 +388,46 @@
 
       message("create-band-message", "作成中...");
 
+      let uploadedPath = null;
+      let bandCreated = false;
       try {
         await getUser();
 
-        const path = selectedIconFile
+        uploadedPath = selectedIconFile
           ? await uploadIcon(selectedIconFile)
           : null;
 
         await rpc("create_band", {
           p_name: name,
-          p_icon_path: path,
+          p_icon_path: uploadedPath,
           p_member_ids: members
         });
+        bandCreated = true;
 
         await openBandList();
       } catch (error) {
+        // 通信切断時にはRPCが既に成功していることがあるため、参照を確認する。
+        let cleanupNote = "";
+        if (uploadedPath && !bandCreated) {
+          try {
+            const { data: bands, error: lookupError } = await db
+              .from("bands").select("id").eq("icon_path", uploadedPath).limit(1);
+            if (lookupError) throw lookupError;
+            if (bands?.length) {
+              await openBandList();
+              return;
+            }
+            const { error: cleanupError } = await db.storage
+              .from(ICON_BUCKET).remove([uploadedPath]);
+            if (cleanupError) throw cleanupError;
+          } catch (cleanupError) {
+            console.warn("未使用アイコンの削除に失敗しました:", cleanupError.message);
+            cleanupNote = "\n画像の後片付けを確認できませんでした。";
+          }
+        }
         message(
           "create-band-message",
-          "作成エラー：" + error.message
+          "作成エラー：" + error.message + cleanupNote
         );
       } finally {
         submit.disabled = false;

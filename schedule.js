@@ -16,27 +16,14 @@
     8: "20:00〜21:00"
   };
 
-  const PAGE_IDS = [
-    "home-section",
-    "schedule-section",
-    "band-section",
-    "band-create-section",
-    "band-leave-section",
-    "band-detail-section",
-    "profile-section",
-    "admin-section"
-  ];
-
   let currentUser = null;
   let scheduleData = new Map();
   let currentDates = [];
   let loadingVersion = 0;
+  let loadingSchedule = false;
 
   function showSchedulePage(pageId) {
-    for (const id of PAGE_IDS) {
-      const section = $(id);
-      if (section) section.hidden = id !== pageId;
-    }
+    showPage(pageId);
   }
 
   function showScheduleMessage(text) {
@@ -121,6 +108,10 @@
 
   async function openSchedule() {
     showSchedulePage("schedule-section");
+    if (CircleSave.pending('schedule:')) {
+      showScheduleMessage('未保存の変更があります。再保存してください。');
+      return;
+    }
     setDefaultDates();
     $("schedule-results").hidden = true;
 
@@ -146,7 +137,13 @@
   );
 
   async function loadSchedule() {
+    if (CircleSave.pending('schedule:')) {
+      showScheduleMessage('未保存の変更があります。再保存してから期間を変更してください。');
+      return;
+    }
     const version = ++loadingVersion;
+    loadingSchedule = true;
+    $('schedule-table').querySelectorAll('button').forEach(button => { button.disabled = true; });
 
     const start = $("start-date").value;
     const end = $("end-date").value;
@@ -190,6 +187,11 @@
         $("schedule-results").hidden = true;
         showScheduleMessage("読み込みエラー：" + error.message);
       }
+    } finally {
+      if (version === loadingVersion) {
+        loadingSchedule = false;
+        $('schedule-table').querySelectorAll('button').forEach(button => { button.disabled = false; });
+      }
     }
   }
 
@@ -208,9 +210,9 @@
     headerRow.appendChild(createElement("th", "日付"));
 
     for (const slot of SLOTS) {
-      headerRow.appendChild(
-        createElement("th", SLOT_LABELS[slot])
-      );
+      const heading = createElement('th', slot <= 5 ? SLOT_LABELS[slot] : `${slot + 12}:00`);
+      heading.title = SLOT_LABELS[slot];
+      headerRow.appendChild(heading);
     }
 
     thead.appendChild(headerRow);
@@ -234,7 +236,7 @@
 
         const cellButton = createElement(
           "button",
-          available ? "〇" : "－",
+          available ? "○" : "ー",
           available ? "slot-button yes" : "slot-button"
         );
 
@@ -259,6 +261,7 @@
   }
 
   async function toggleSchedule(date, slot, cellButton) {
+    if (loadingSchedule) return;
     const user = currentUser;
 
     if (!user) {
@@ -270,67 +273,29 @@
     const oldValue = scheduleData.get(key) === true;
     const newValue = !oldValue;
 
-    cellButton.disabled = true;
-    showScheduleMessage("保存中...");
-
-    try {
-      const { data: existing, error: readError } = await db
-        .from("schedules")
-        .select("id")
-        .eq("user_id", user.id)
-        .eq("schedule_date", date)
-        .eq("slot", slot)
-        .limit(1);
-
-      if (readError) throw readError;
-
-      let saveError;
-
-      if (existing && existing.length > 0) {
-        const result = await db
-          .from("schedules")
-          .update({ available: newValue })
-          .eq("id", existing[0].id)
-          .eq("user_id", user.id);
-
-        saveError = result.error;
-      } else {
-        const result = await db
-          .from("schedules")
-          .insert({
-            user_id: user.id,
-            schedule_date: date,
-            slot,
-            available: newValue
-          });
-
-        saveError = result.error;
-      }
-
-      if (saveError) throw saveError;
-
-      scheduleData.set(key, newValue);
-
-      cellButton.textContent = newValue ? "〇" : "－";
-      cellButton.classList.toggle("yes", newValue);
-
-      cellButton.setAttribute(
-        "aria-label",
-        `${date} ${SLOT_LABELS[slot]}：` +
-        (newValue ? "参加可能" : "参加不可")
-      );
-
-      showScheduleMessage("保存しました。");
-    } catch (error) {
-      showScheduleMessage("保存エラー：" + error.message);
-    } finally {
-      cellButton.disabled = false;
-    }
+    scheduleData.set(key, newValue);
+    cellButton.textContent = newValue ? '○' : 'ー';
+    cellButton.classList.toggle('yes', newValue);
+    cellButton.setAttribute('aria-label', `${date} ${SLOT_LABELS[slot]}：${newValue ? '参加可能' : '参加不可'}`);
+    CircleSave.put(`schedule:${user.id}:${key}`, newValue, async value => {
+      if (currentUser?.id !== user.id) throw Error('ログインし直してください');
+      const {error} = await db.rpc('ui_schedule_save', {p_date:date,p_slot:slot,p_available:value});
+      if (error) throw error;
+    }, (status,error) => {
+      if (currentUser?.id !== user.id) return;
+      cellButton.dataset.saveState = error ? 'error' : status === '保存済み' ? 'saved' : 'saving';
+      showScheduleMessage(status + (error ? `：${error.message}` : CircleSave.pending('schedule:') ? '（未保存のセルあり）' : ''));
+    });
   }
+
+  const retry = createElement('button','再保存','secondary-button');
+  retry.type='button';retry.addEventListener('click',()=>CircleSave.retry('schedule:'));
+  $('schedule-message').after(retry);
 
   db.auth.onAuthStateChange(event => {
     if (event === "SIGNED_OUT") {
       loadingVersion++;
+      loadingSchedule = false;
       currentUser = null;
       scheduleData.clear();
       currentDates = [];

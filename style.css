@@ -5,7 +5,7 @@
 :root {
   font-family: system-ui, -apple-system, sans-serif;
   color: #202936;
-  background: #f3f5f7;
+  background: #f7f5ff;
 }
 
 * {
@@ -693,3 +693,76 @@ label {
 .audition-card h3{margin-top:0}
 #audition-form textarea,#audition-score-form textarea{display:block;width:100%;font:inherit;padding:10px;margin:8px 0 14px;border:1px solid #cad2d8;border-radius:7px;resize:vertical}
 #audition-form label,#audition-score-form label{display:block;margin-top:10px}
+/* OD timetable: the same table is usable by keyboard, touch and desktop. */
+.tt-scroll { overflow-x: auto; margin: 1rem 0; border: 1px solid #cbd5e1; border-radius: 8px; }
+.tt-table { border-collapse: collapse; width: 100%; min-width: 900px; background: white; color: #172b42; }
+.tt-table th, .tt-table td { border: 1px solid #cbd5e1; padding: 10px; vertical-align: top; text-align: left; }
+.tt-table th { background: #e8eef6; }
+.tt-table td:first-child { white-space: nowrap; }
+.tt-table input[type=number] { width: 5rem; min-width: 0; }
+.tt-table button { margin: 3px 0; padding: 8px; font-size: .9rem; }
+.tt-table .tt-own-performance td { background: #dbeafe; }
+.tt-table .tt-own-staff td { background: #edfff1; }
+.tt-table td.tt-mine { background: #b5efc9; font-weight: bold; }
+.tt-fields, .tt-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+.tt-fields label { flex: 1 1 140px; }
+.tt-actions button { width: auto; }
+.tt-warnings { background: #fff6d9; color: #674300; border: 1px solid #e3c66f; padding: 16px; border-radius: 8px; }
+.tt-warnings li { margin: 6px 0; }
+.tt-status { font-weight: bold; }
+.tt-picker { width: min(94vw, 650px); max-height: 85vh; overflow: auto; border: 1px solid #94a3b8; border-radius: 12px; padding: 20px; }
+.tt-picker::backdrop { background: #0f172a99; }
+.tt-picker button { display: block; width: 100%; white-space: normal; }
+#timetable-inbox pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+#timetable-section details { margin-top: 18px; }
+#timetable-section summary, #timetable-inbox summary { cursor: pointer; padding: 10px; }
+
+/* Shared navigation, dashboard and dialogs (UI Q1–Q19, Q73–Q74). */
+#app-header {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center;
+  gap: 12px; min-height: 64px; padding: 8px 22px; background: #fff;
+  border-bottom: 1px solid #e7dff5; color: #6045a3;
+}
+#app-header button { width: auto; margin: 0; background: #f0e9ff; color: #6045a3; min-height: 44px; }
+#notification-bell { margin-left: auto !important; }
+#notification-count { border-radius: 20px; padding: 2px 6px; background: #df477e; color: #fff; }
+body.signed-in { padding: 0 0 32px; }
+body.signed-in main { margin: 24px 24px 0 260px; width: calc(100% - 284px); max-width: 1100px; }
+#sidebar {
+  position: fixed; top: 64px; left: 0; bottom: 0; z-index: 30; width: 236px;
+  padding: 14px 16px; overflow-y: auto; background: #fff; border-right: 1px solid #e7dff5;
+}
+#sidebar h3 { color: #847797; font-size: .8rem; margin: 20px 10px 8px; }
+#sidebar button { text-align: left; background: #f7f2ff; color: #6045a3; min-height: 44px; }
+#app-header #sidebar-toggle { display: none; }
+#sidebar-backdrop { display: none; }
+.dashboard-top { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.dashboard-top article, #home-section > article { padding: 16px; border: 1px solid #e7dff5; border-radius: 16px; margin-bottom: 18px; background: #fffcff; overflow-wrap: anywhere; }
+.dashboard-top article h3, #home-section > article h3 { margin-top: 0; }
+.circle-modal { width: min(94vw,640px); max-height: 88dvh; overflow: auto; border: 1px solid #ddd1f3; border-radius: 18px; padding: 22px; color: #202936; }
+.circle-modal::backdrop { background: #231b3d88; }
+.circle-modal textarea { display: block; width: 100%; min-height: 150px; resize: vertical; border: 1px solid #cad2d8; border-radius: 8px; padding: 12px; font: inherit; }
+.notice-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+#schedule-table .slot-button[data-save-state="error"] { outline: 2px solid #c53b55; outline-offset: -2px; }
+#schedule-table .slot-button[data-save-state="saving"] { box-shadow: inset 0 -3px #bc8a19; }
+#schedule-table .slot-button.yes { background: #d8f3e4; color: #206344; }
+@media (max-width: 760px) {
+  #app-header { padding: 8px 12px; }
+  #app-header #sidebar-toggle { display: block; }
+  body.signed-in main { margin: 12px; width: calc(100% - 24px); padding: 14px; }
+  #sidebar { top: 0; width: min(80vw,280px); z-index: 50; transform: translateX(-100%); transition: transform .2s ease; }
+  #sidebar.is-open { transform: translateX(0); }
+  #sidebar-backdrop:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 40; width: 100%; height: 100dvh; border-radius: 0; margin: 0; background: #231b3d88; }
+  .dashboard-top { grid-template-columns: 1fr; gap: 0; }
+  #date-range-form > .date-range, #band-date-form > .date-range { grid-column: 1 / -1; }
+  #schedule-table th, #schedule-table td { font-size: 10px; padding: 4px 0; overflow-wrap: anywhere; }
+  #schedule-table th:first-child { width: 19%; }
+  #schedule-table .slot-button { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) { #sidebar { transition: none; } }
+@media (max-width: 600px) {
+  .tt-table th, .tt-table td { padding: 8px; }
+  .tt-table { min-width: 820px; font-size: .88rem; }
+  .tt-scroll { max-height: 70vh; }
+  .tt-table th { position: sticky; top: 0; z-index: 1; }
+}
