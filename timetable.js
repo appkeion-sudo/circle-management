@@ -186,7 +186,6 @@ const TimetableUI = (() => {
     }catch(e){if(currentAuthUser?.id===user&&v===inboxVersion)target.textContent=`通知を取得できません：${e.message}`;}
   }
   $('open-timetable-button').addEventListener('click',list);
-  $('timetable-home').addEventListener('click',()=>{if(dirty&&!confirm('未保存の変更を破棄しますか？'))return;version++;dirty=false;showPage('home-section');loadInbox();});
   db.auth.onAuthStateChange(event=>{if(event==='SIGNED_OUT'){version++;inboxVersion++;plan=null;context=null;dirty=false;$('timetable-body').replaceChildren();$('timetable-inbox').replaceChildren();}else if(event==='SIGNED_IN'||event==='INITIAL_SESSION')setTimeout(loadInbox,0);});
   window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadInbox();});

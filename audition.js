@@ -6,21 +6,27 @@
  const msg = (id,t) => {$(id).textContent=t||"";};
  const fmt = s => s ? new Date(s).toLocaleString('ja-JP') : '未設定';
  const statusText = {draft:'下書き',open:'エントリー受付中',scoring:'採点中',closed:'採点終了',published:'結果公開'};
- let president=false, current=null, criteria=[], scoreVersion=0;
+ let president=false, canDelete=false, current=null, criteria=[], scoreVersion=0;
  const rpc=async (name,args={})=>{const {data,error}=await db.rpc(name,args);if(error)throw error;return data;};
  const select=async (table,cols='*')=>{const {data,error}=await db.from(table).select(cols);if(error)throw error;return data;};
- async function checkPresident(){president=await rpc('is_circle_president')===true;return president;}
+ async function checkPresident(){president=false;canDelete=false;president=await rpc('is_circle_president')===true;canDelete=await rpc('audition_can_delete')===true;return president;}
  function field(label,type,value='',props={}){const l=mk('label',label),i=mk(type==='textarea'?'textarea':'input');if(type!=='textarea')i.type=type;i.value=value;Object.assign(i,props);l.append(i);return [l,i];}
  function btn(text,fn,cls=''){const b=mk('button',text,cls);b.type='button';b.addEventListener('click',async()=>{b.disabled=true;try{await fn();}catch(e){alert(e.message);}finally{b.disabled=false;}});return b;}
  function go(id){showPage(id);}
+ async function deleteAudition(a){
+  if(!canDelete)return;
+  if(!confirm(`「${a.title}」と関連するエントリー・採点・感想・結果・タイムテーブルを削除します。元に戻せません。削除しますか？`))return;
+  await rpc('audition_delete',{p_audition_id:a.id});
+  await openList();
+ }
  $('open-audition-button').addEventListener('click',()=>openList());
  $('open-feedback-button').addEventListener('click',()=>openFeedback());
- for(const [id,page] of [['audition-back-home','home-section'],['feedback-back-home','home-section'],['audition-back-list','audition-section'],['feedback-back-list','feedback-section']]) $(id).addEventListener('click',()=>page==='audition-section'?openList():page==='feedback-section'?openFeedback():go(page));
+ for(const [id,page] of [['audition-back-list','audition-section'],['feedback-back-list','feedback-section']]) $(id).addEventListener('click',()=>page==='audition-section'?openList():page==='feedback-section'?openFeedback():go(page));
  $('audition-new').addEventListener('click',()=>openCreate());
  async function openList(){go('audition-section');msg('audition-message','読み込み中...');$('audition-list').replaceChildren();try{
   await checkPresident();$('audition-new').hidden=!president;
   const a=await select('auditions','id,title,status,entry_deadline,created_at');a.sort((x,y)=>y.created_at.localeCompare(x.created_at));
-  for(const x of a){const card=mk('div',undefined,'audition-card');add(card,mk('h3',x.title),mk('p',`${statusText[x.status]||x.status} / エントリー締切：${fmt(x.entry_deadline)}`),btn('詳細を見る',()=>openDetail(x.id)));$('audition-list').append(card);}
+  for(const x of a){const card=mk('div',undefined,'audition-card');add(card,mk('h3',x.title),mk('p',`${statusText[x.status]||x.status} / エントリー締切：${fmt(x.entry_deadline)}`),btn('詳細を見る',()=>openDetail(x.id)));if(canDelete)card.append(btn('削除',()=>deleteAudition(x),'danger-button'));$('audition-list').append(card);}
   msg('audition-message',a.length?'':'オーディションはありません。');
  }catch(e){msg('audition-message',e.message);}}
  async function openCreate(){if(!president)return;go('audition-create-section');$('audition-form').reset();$('audition-criteria').replaceChildren();addCriterion('演奏点',10,1);addCriterion('表現点',5,0.6);msg('audition-create-message','');const prev=$('audition-previous-live');prev.replaceChildren();const none=mk('option','指定なし');none.value='';prev.append(none);try{const all=await select('auditions','id,title,status');for(const a of all.filter(a=>a.status==='published')){const o=mk('option',a.title);o.value=a.id;prev.append(o);}}catch(e){msg('audition-create-message',e.message);}}
@@ -40,7 +46,8 @@
   const root=$('audition-detail');add(root,mk('h2',a.title),mk('p',statusText[a.status]),mk('p',a.description||''),mk('p',`エントリー締切：${fmt(a.entry_deadline)}`),mk('p',`一般枠 ${a.general_slots} / 1年生枠 ${a.freshman_slots}`),mk('p',a.previous_live_audition_id?'前回ライブの出演バンドIDはエントリー禁止':'前回ライブ：未指定'),mk('h3','採点項目'));
   if(typeof TimetableUI!=='undefined')await TimetableUI.mountOD(a,es,root,president);
   cs.forEach(c=>root.append(mk('p',`${c.name}：${c.max_score}点 × ${c.weight}`)));
-  if(president){const actions=mk('div');const next={draft:['open','エントリー受付を開始'],open:['scoring','採点を開始'],scoring:['closed','採点を終了'],closed:['published','結果を公開']};if(next[a.status])actions.append(btn(next[a.status][1],async()=>{if(!confirm(`${next[a.status][1]}しますか？`))return;await rpc('audition_change_status',{p_audition_id:id,p_status:next[a.status][0]});await openDetail(id);}));if(a.status==='closed'){actions.prepend(btn('結果を集計・再集計',async()=>{await rpc('audition_finalize',{p_audition_id:id});await openDetail(id);}));actions.prepend(btn('無効票を選択',()=>openInvalidVotes(id)));} actions.append(btn('このオーディションを削除',async()=>{if(!confirm('このオーディションと採点・感想・結果をすべて削除します。元に戻せません。削除しますか？'))return;await rpc('audition_delete',{p_audition_id:id});await openList();},'danger-button'));root.append(actions);}
+  if(president){const actions=mk('div');const next={draft:['open','エントリー受付を開始'],open:['scoring','採点を開始'],scoring:['closed','採点を終了'],closed:['published','結果を公開']};if(next[a.status])actions.append(btn(next[a.status][1],async()=>{if(!confirm(`${next[a.status][1]}しますか？`))return;await rpc('audition_change_status',{p_audition_id:id,p_status:next[a.status][0]});await openDetail(id);}));if(a.status==='closed'){actions.prepend(btn('結果を集計・再集計',async()=>{await rpc('audition_finalize',{p_audition_id:id});await openDetail(id);}));actions.prepend(btn('無効票を選択',()=>openInvalidVotes(id)));} root.append(actions);}
+  if(canDelete)root.append(btn('このオーディションを削除',()=>deleteAudition(a),'danger-button'));
   if(a.status==='open'){
    root.append(mk('h3','バンドエントリー'));
 
@@ -99,5 +106,5 @@
  }
  async function openFeedback(){go('feedback-section');msg('feedback-message','読み込み中...');$('feedback-list').replaceChildren();try{const rows=await rpc('audition_feedback_list');for(const r of rows){$('feedback-list').append(btn(`${r.audition_title} / ${r.band_name}`,()=>openFeedbackDetail(r)));}msg('feedback-message',rows.length?'':'公開された感想はありません。');}catch(e){msg('feedback-message',e.message);}}
  async function openFeedbackDetail(r){go('feedback-detail-section');$('feedback-title').textContent=`${r.audition_title} / ${r.band_name}`;$('feedback-comments').replaceChildren();msg('feedback-detail-message','読み込み中...');try{const comments=await rpc('audition_feedback',{p_entry_id:r.entry_id});for(const c of comments){$('feedback-comments').append(mk('div',c.comment,'audition-card'));}msg('feedback-detail-message',comments.length?'':'感想はまだありません。');}catch(e){msg('feedback-detail-message',e.message);}}
- db.auth.onAuthStateChange(event=>{if(event==='SIGNED_OUT'){scoreVersion++;president=false;current=null;criteria=[];$('audition-score-fields').replaceChildren();$('audition-score-comment').value='';$('audition-score-form').onsubmit=ev=>ev.preventDefault();$('audition-score-submit').disabled=true;}});
+ db.auth.onAuthStateChange(event=>{if(event==='SIGNED_OUT'){scoreVersion++;president=false;canDelete=false;current=null;criteria=[];$('audition-score-fields').replaceChildren();$('audition-score-comment').value='';$('audition-score-form').onsubmit=ev=>ev.preventDefault();$('audition-score-submit').disabled=true;}});
 })();

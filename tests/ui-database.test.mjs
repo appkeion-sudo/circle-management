@@ -37,6 +37,17 @@ test('UI migration, notices, schedules and notification authorization',async t=>
    await q("SELECT ui_schedule_save('2099-01-01',1,true)");
    await user(3);assert.equal((await q('SELECT * FROM schedules')).length,1);
   });
+  await t.test('deleting all schedules removes every date for the caller and preserves other users',async()=>{
+   await user(3);
+   await q("SELECT ui_schedule_save('2000-01-01',8,true)");
+   await q('SELECT ui_schedule_delete_all()');
+   assert.equal((await q('SELECT * FROM schedules')).length,0);
+   await q('SELECT ui_schedule_delete_all()');
+   await user(4);
+   assert.equal((await q('SELECT * FROM schedules')).length,1);
+   await user(null);
+   await assert.rejects(q('SELECT ui_schedule_delete_all()'),/ログイン/);
+  });
   await t.test('opening entry emits one notification per recipient; reads cannot mark another user',async()=>{
    await db.exec('RESET ROLE');await q("INSERT INTO auditions(id,title,status,event_date,entry_deadline) VALUES($1,'next','draft','2099-01-01',now()+interval '1 day')",[id(200)]);
    await q("UPDATE auditions SET status='open' WHERE id=$1",[id(200)]);await q("UPDATE auditions SET status='open' WHERE id=$1",[id(200)]);
@@ -58,6 +69,7 @@ test('UI migration, notices, schedules and notification authorization',async t=>
   await t.test('anonymous users cannot execute RPCs or spoof the notification trigger',async()=>{
    await db.exec('RESET ROLE');await db.exec('SET ROLE anon');await assert.rejects(q('SELECT ui_dashboard()'),/permission denied/);
    await assert.rejects(q('SELECT ui_schedule_save(current_date,1,true)'),/permission denied/);
+   await assert.rejects(q('SELECT ui_schedule_delete_all()'),/permission denied/);
    await assert.rejects(q('SELECT ui_audition_notification()'),/permission denied/);
   });
  } finally {await db.close();}

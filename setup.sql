@@ -262,10 +262,18 @@ BEGIN
  END IF;
 END $$;
 
+CREATE OR REPLACE FUNCTION public.audition_can_delete()
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+ SELECT auth.uid() IS NOT NULL AND (public.is_circle_president()
+  OR coalesce((to_jsonb(public.profile_context())->>'is_site_admin')::boolean,false));
+$$;
+REVOKE ALL ON FUNCTION public.audition_can_delete() FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION public.audition_can_delete() TO authenticated;
+
 CREATE OR REPLACE FUNCTION public.audition_delete(p_audition_id uuid)
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
 BEGIN
- IF NOT public.is_circle_president() THEN RAISE EXCEPTION '部長のみ削除できます'; END IF;
+ IF NOT public.audition_can_delete() THEN RAISE EXCEPTION '部長またはサイト管理者のみ削除できます'; END IF;
  IF NOT EXISTS(SELECT 1 FROM public.auditions WHERE id=p_audition_id) THEN RAISE EXCEPTION '対象がありません'; END IF;
  -- Existing foreign keys on auditions and entries use ON DELETE CASCADE.
  DELETE FROM public.auditions WHERE id=p_audition_id;
@@ -1080,7 +1088,7 @@ REVOKE INSERT,UPDATE,DELETE ON public.audition_participants FROM authenticated,a
 CREATE OR REPLACE FUNCTION public.od_preserve_archive()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
 BEGIN
- IF EXISTS(SELECT 1 FROM public.od_timetables WHERE audition_id=OLD.id AND published IS NOT NULL
+ IF NOT public.audition_can_delete() AND EXISTS(SELECT 1 FROM public.od_timetables WHERE audition_id=OLD.id AND published IS NOT NULL
   AND event_date<(now() AT TIME ZONE 'Asia/Tokyo')::date) THEN RAISE EXCEPTION '過去ODの公開タイムテーブルは保存されるため削除できません'; END IF;
  RETURN OLD;
 END $$;
@@ -1159,6 +1167,12 @@ BEGIN
  INSERT INTO public.schedules(user_id,schedule_date,slot,available) VALUES(auth.uid(),p_date,p_slot,p_available)
  ON CONFLICT(user_id,schedule_date,slot) DO UPDATE SET available=excluded.available;
 END $$;
+CREATE OR REPLACE FUNCTION public.ui_schedule_delete_all() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+BEGIN
+ IF auth.uid() IS NULL THEN RAISE EXCEPTION 'ログインしてください'; END IF;
+ DELETE FROM public.schedules WHERE user_id=auth.uid();
+END $$;
 CREATE OR REPLACE FUNCTION public.ui_notice_save(p_id uuid,p_title text,p_body text) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
 BEGIN
@@ -1232,7 +1246,7 @@ CREATE TRIGGER ui_audition_notification AFTER UPDATE OF status ON public.auditio
  FOR EACH ROW EXECUTE FUNCTION public.ui_audition_notification();
 DO $$ DECLARE f record; BEGIN
  FOR f IN SELECT p.oid::regprocedure signature,p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-  WHERE n.nspname='public' AND p.proname IN ('ui_can_post','ui_schedule_save','ui_notice_save','ui_notice_delete',
+  WHERE n.nspname='public' AND p.proname IN ('ui_can_post','ui_schedule_save','ui_schedule_delete_all','ui_notice_save','ui_notice_delete',
    'ui_notifications','ui_notifications_read','ui_dashboard','ui_audition_notification') LOOP
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,anon,authenticated',f.signature);
   IF f.proname<>'ui_audition_notification' THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO authenticated',f.signature); END IF;

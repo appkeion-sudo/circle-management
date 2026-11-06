@@ -11,6 +11,7 @@ class Element {
   addEventListener(event,handler){(this.listeners[event]??=[]).push(handler);}
   append(...children){this.children.push(...children);}
   appendChild(child){this.append(child);return child;}
+  after(element){this.nextSibling=element;}
   replaceChildren(...children){this.children=[...children];}
   querySelectorAll(selector){
     const descendants=this.children.flatMap(child=>child instanceof Element?[child,...child.querySelectorAll('*')]:[]);
@@ -106,12 +107,94 @@ test('roles reuse the HTML container and discard responses arriving after logout
   logout('SIGNED_OUT');finish({data:[{name:'会計'}]});await request;
   assert.equal(container.children.length,0);
 });
+test('schedule delete-all follows retry, requires saved changes and confirmation, and retains cells on failure',async()=>{
+  let pending=false,accepted=false,fail=true,calls=0,finish;
+  const env=environment({
+    auth:{getUser:async()=>({data:{user:{id:'user'}}}),onAuthStateChange(){}},
+    rpc:async name=>{
+      assert.equal(name,'ui_schedule_delete_all');calls++;
+      if(fail)return {error:new Error('通信失敗')};
+      await new Promise(resolve=>{finish=resolve;});return {};
+    },
+    from(){return {select(){return this;},eq(){return this;},gte(){return this;},
+      lte:async()=>({data:[{schedule_date:'2026-11-06',slot:1,available:true}]})};}
+  });
+  env.context.CircleSave={pending:()=>pending,retry(){}};
+  env.context.confirm=()=>accepted;
+  const head=new Element('thead'),body=new Element('tbody'),table=env.get('schedule-table');
+  table.append(head,body);table.querySelector=selector=>selector==='thead'?head:body;
+  await env.run('schedule.js');
+  const retry=env.get('schedule-message').nextSibling,button=retry.nextSibling;
+  assert.equal(retry.textContent,'再保存');
+  assert.equal(button.textContent,'入力した日程をすべて削除');
+  env.get('start-date').value='2026-11-06';env.get('end-date').value='2026-11-06';
+  await env.get('date-range-form').emit('submit');
+  const cell=()=>body.querySelectorAll('*').find(e=>e.tagName==='button');
+  assert.equal(cell().textContent,'○');
+  pending=true;accepted=true;await button.emit('click');assert.equal(calls,0);
+  pending=false;accepted=false;await button.emit('click');assert.equal(calls,0);
+  accepted=true;await button.emit('click');assert.equal(calls,1);
+  assert.match(env.get('schedule-message').textContent,/通信失敗/);
+  assert.equal(cell().textContent,'○');assert.equal(button.disabled,false);
+  fail=false;const deletion=button.emit('click');
+  while(!finish)await Promise.resolve();
+  assert.equal(button.disabled,true);assert.equal(retry.disabled,true);
+  await button.emit('click');assert.equal(calls,2);
+  finish();await deletion;
+  assert.ok(body.querySelectorAll('*').filter(e=>e.tagName==='button').every(e=>e.textContent==='ー'));
+  assert.match(env.get('schedule-message').textContent,/すべて削除しました/);
+  assert.equal(button.disabled,false);assert.equal(retry.disabled,false);
+});
+
+test('presidents and site administrators can delete auditions with confirmation',async()=>{
+  for(const role of ['member','president','admin']){
+    const president=role==='president',canDelete=role!=='member';
+    const calls=[],alerts=[],confirmations=[];
+    let accepted=false,fail=false,deleted=false;
+    const audition={id:'audition',title:'秋の審査',status:'draft',created_at:'2026-11-06'};
+    const env=environment({auth:{onAuthStateChange(){}},
+      rpc:async(name,args)=>{
+        if(name==='is_circle_president')return {data:president};
+        if(name==='audition_can_delete')return {data:canDelete};
+        if(name==='audition_delete'){
+          calls.push(args);
+          if(fail)return {error:new Error('削除できません')};
+          deleted=true;return {data:null};
+        }
+        throw Error('Unexpected RPC '+name);
+      },
+      from(){return {select:async()=>({data:deleted?[]:[audition]})};}
+    });
+    env.context.confirm=message=>{confirmations.push(message);return accepted;};
+    env.context.alert=message=>alerts.push(message);
+    await env.run('audition.js');
+    await env.get('open-audition-button').emit('click');
+    const deleteButton=env.get('audition-list').querySelectorAll('*').find(e=>e.tagName==='button'&&e.textContent==='削除');
+    assert.equal(!!deleteButton,canDelete);
+    if(!canDelete)continue;
+    await deleteButton.emit('click');
+    assert.equal(calls.length,0);
+    assert.match(confirmations[0],/秋の審査/);
+    accepted=true;fail=true;
+    await deleteButton.emit('click');
+    assert.deepEqual(alerts,['削除できません']);
+    assert.equal(deleteButton.disabled,false);
+    assert.equal(env.get('audition-list').children.length,1);
+    fail=false;
+    await deleteButton.emit('click');
+    assert.equal(calls.at(-1).p_audition_id,'audition');
+    assert.equal(env.get('audition-list').children.length,0);
+    assert.equal(env.get('audition-message').textContent,'オーディションはありません。');
+  }
+});
+
 test('score forms restore saved scores and comments instead of submitting blanks',async()=>{
   const calls=[];
   const env=environment({auth:{onAuthStateChange(){}},
     rpc:async(name,args)=>{
       calls.push(name);
       if(name==='is_circle_president')return {data:false};
+      if(name==='audition_can_delete')return {data:false};
       if(name==='audition_entries_view')return {data:[{id:'entry',band_id:'band',band_name:'他バンド',is_freshman_band:false,can_score:true}]};
       if(name==='audition_my_review')return {data:{scores:{criterion:7},comment:'保存済み感想'}};
       throw Error('Unexpected RPC '+name);

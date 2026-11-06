@@ -84,19 +84,12 @@
     </div>
 
     <section id="timetable-section" hidden>
-      <button id="timetable-home" type="button" class="secondary-button">← ホーム</button>
       <div id="timetable-body"></div>
       <p id="timetable-message" role="status"></p>
     </section>
 
     <!-- MYスケジュール -->
     <section id="schedule-section" hidden>
-      <button id="back-home-button"
-        type="button"
-        class="secondary-button">
-        ← ホームに戻る
-      </button>
-
       <h2>MYスケジュール</h2>
       <p>バンド練習に参加できる時間帯を選択してください。</p>
 
@@ -135,12 +128,6 @@
 
     <!-- BANDスケジュール -->
     <section id="band-section" hidden>
-      <button id="band-back-home"
-        type="button"
-        class="secondary-button">
-        ← ホームに戻る
-      </button>
-
       <h2>BANDスケジュール</h2>
       <p>所属しているバンド</p>
 
@@ -292,21 +279,15 @@
     </section>
 
 
-    <section id="audition-section" hidden><button id="audition-back-home" class="secondary-button">← ホーム</button><h2>オーディション</h2><button id="audition-new" hidden>＋ 新規作成</button><div id="audition-list"></div><p id="audition-message" role="status"></p></section>
+    <section id="audition-section" hidden><h2>オーディション</h2><button id="audition-new" hidden>＋ 新規作成</button><div id="audition-list"></div><p id="audition-message" role="status"></p></section>
     <section id="audition-create-section" hidden><button id="audition-back-list" class="secondary-button">← 一覧へ</button><h2>オーディション作成</h2><form id="audition-form"><label>名前<input id="audition-title" required maxlength="100"></label><label>説明<textarea id="audition-description" rows="3"></textarea></label><label>エントリー締切<input id="audition-entry" type="datetime-local" required></label><label>一般枠<input id="audition-general" type="number" min="0" value="0" required></label><label>1年生枠<input id="audition-freshman" type="number" min="0" value="0" required></label><label>前回ライブ（同じバンドIDの出演を禁止）<select id="audition-previous-live"><option value="">指定なし</option></select></label><h3>採点項目</h3><div id="audition-criteria"></div><button type="button" id="audition-add-criterion" class="secondary-button">＋ 採点項目を追加</button><button id="audition-submit" type="submit">下書きを作成</button></form><p id="audition-create-message" role="status"></p></section>
     <section id="audition-detail-section" hidden><button id="audition-detail-back" class="secondary-button" onclick="document.getElementById('open-audition-button').click()">← 一覧へ</button><div id="audition-detail"></div><p id="audition-detail-message" role="status"></p></section>
     <section id="audition-score-section" hidden><button id="audition-score-back" class="secondary-button">← 詳細へ</button><h2 id="audition-score-title"></h2><form id="audition-score-form"><div id="audition-score-fields"></div><label>感想（任意・3000文字以内）<textarea id="audition-score-comment" maxlength="3000" rows="5"></textarea></label><button id="audition-score-submit" type="submit">採点と感想を保存</button></form><p id="audition-score-message" role="status"></p></section>
-    <section id="feedback-section" hidden><button id="feedback-back-home" class="secondary-button">← ホーム</button><h2>感想</h2><div id="feedback-list"></div><p id="feedback-message" role="status"></p></section>
+    <section id="feedback-section" hidden><h2>感想</h2><div id="feedback-list"></div><p id="feedback-message" role="status"></p></section>
     <section id="feedback-detail-section" hidden><button id="feedback-back-list" class="secondary-button">← 感想一覧</button><h2 id="feedback-title"></h2><div id="feedback-comments"></div><p id="feedback-detail-message" role="status"></p></section>
 
     <!-- プロフィール -->
     <section id="profile-section" hidden>
-      <button id="profile-back-home"
-        type="button"
-        class="secondary-button">
-        ← ホームに戻る
-      </button>
-
       <h2>プロフィール</h2>
 
       <p>
@@ -389,12 +370,6 @@
 
     <!-- 管理者ツール -->
     <section id="admin-section" hidden>
-      <button id="admin-back-home"
-        type="button"
-        class="secondary-button">
-        ← ホームに戻る
-      </button>
-
       <h2>管理者ツール</h2>
 
       <!-- 入学年度変更申請 -->

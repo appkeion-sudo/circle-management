@@ -78,7 +78,7 @@ try{
   await evaluate(`mock.offline=true;document.querySelector('#schedule-table .slot-button').click()`);
   await waitFor(`document.querySelector('#schedule-table .slot-button').dataset.saveState==='error'`);
   assert.equal(await evaluate(`document.querySelector('#schedule-table .slot-button').textContent`),'○');
-  await evaluate(`document.getElementById('back-home-button').click();document.getElementById('open-schedule-button').click()`);
+  await evaluate(`document.querySelector('#sidebar button').click();document.getElementById('open-schedule-button').click()`);
   assert.equal(await evaluate(`document.getElementById('schedule-results').hidden`),false,'returning keeps unsaved cells visible');
   await evaluate(`mock.offline=false;CircleSave.retry('schedule:')`);
   await waitFor(`!CircleSave.pending()`);

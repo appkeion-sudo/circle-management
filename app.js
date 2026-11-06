@@ -4,10 +4,10 @@
 // Supabase接続
 // ==========================================
 
-// これまで使用していた値を入力してください。
+// 移行先で新しく作成したSupabaseのURLと公開用キーを入力してください。
 // service_roleキーは絶対に使用しないでください。
-const SUPABASE_URL = "https://cjymelefxesbmbicemvf.supabase.co";
-const SUPABASE_KEY = "sb_publishable_KxSQ8tpQH2rgVwRoirYd2w_WUP6TQRA";
+const SUPABASE_URL = "";
+const SUPABASE_KEY = "";
 
 const db = window.supabase.createClient(
   SUPABASE_URL,

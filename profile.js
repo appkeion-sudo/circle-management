@@ -200,11 +200,6 @@
     openProfile
   );
 
-  $("profile-back-home").addEventListener(
-    "click",
-    () => showProfilePage("home-section")
-  );
-
   $("profile-form").addEventListener(
     "submit",
     async event => {
@@ -396,11 +391,6 @@
   $("open-admin-button").addEventListener(
     "click",
     openAdmin
-  );
-
-  $("admin-back-home").addEventListener(
-    "click",
-    () => showProfilePage("home-section")
   );
 
   // ==========================================

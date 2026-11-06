@@ -115,9 +115,33 @@ test('timetable migration, authorization, publication snapshots, cancellation, a
    await owner();await q("UPDATE od_timetables SET event_date='2000-01-01' WHERE audition_id=$1",[aid]);await user(1);
    const data=await context();assert.ok(data.archived);assert.ok(data.published);await assert.rejects(save(),/過去OD/);
    await assert.rejects(q('SELECT od_timetable_participation($1,$2,false)',[aid,id(6)]),/過去OD/);
-   await assert.rejects(q('SELECT audition_delete($1)',[aid]),/過去OD/);
    await db.exec('SET ROLE anon');await assert.rejects(q('SELECT od_timetable_context($1)',[aid]),/permission denied/);
    await assert.rejects(q('SELECT od_timetable_save($1,$2::jsonb,0)',[aid,JSON.stringify(plan)]),/permission denied/);
+  });
+  await t.test('administrators can delete archived auditions and all timetable versions and notifications',async()=>{
+   await user(3);
+   assert.equal(await scalar('SELECT audition_can_delete()'),false);
+   await assert.rejects(q('SELECT audition_delete($1)',[aid]),/部長またはサイト管理者/);
+   await owner();
+   assert.equal(await scalar('SELECT count(*)::int FROM od_timetables WHERE audition_id=$1',[aid]),1);
+   assert.ok(await scalar('SELECT count(*)::int FROM od_publication_events WHERE audition_id=$1',[aid])>0);
+   // Test both administrator types against an actual archived, published timetable.
+   for(const n of [1,2]){
+    await db.exec('BEGIN');
+    await user(n);
+    assert.equal(await scalar('SELECT audition_can_delete()'),true);
+    await q('SELECT audition_delete($1)',[aid]);
+    await owner();
+    for(const table of ['auditions','od_timetables','od_publication_events','audition_timetable_sources','audition_entries','audition_participants']){
+     assert.equal(await scalar(`SELECT count(*)::int FROM ${table} WHERE ${table==='auditions'?'id':'audition_id'}=$1`,[aid]),0,table);
+    }
+    assert.equal(await scalar('SELECT count(*)::int FROM od_timetable_notifications'),0);
+    assert.equal(await scalar('SELECT count(*)::int FROM ui_timetable_reads'),0);
+    await db.exec('ROLLBACK');
+   }
+   await user(null);await db.exec('SET ROLE anon');
+   await assert.rejects(q('SELECT audition_delete($1)',[aid]),/permission denied/);
+   await assert.rejects(q('SELECT audition_can_delete()'),/permission denied/);
   });
  }finally{await db.close();}
 });

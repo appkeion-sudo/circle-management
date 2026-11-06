@@ -224,10 +224,6 @@
     "click", openBandList
   );
 
-  $("band-back-home").addEventListener(
-    "click", () => page("home-section")
-  );
-
   // =====================================
   // バンド作成
   // =====================================

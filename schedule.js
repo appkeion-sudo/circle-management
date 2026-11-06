@@ -21,6 +21,7 @@
   let currentDates = [];
   let loadingVersion = 0;
   let loadingSchedule = false;
+  let deletingSchedule = false;
 
   function showSchedulePage(pageId) {
     showPage(pageId);
@@ -108,6 +109,7 @@
 
   async function openSchedule() {
     showSchedulePage("schedule-section");
+    if (deletingSchedule) return;
     if (CircleSave.pending('schedule:')) {
       showScheduleMessage('未保存の変更があります。再保存してください。');
       return;
@@ -123,11 +125,6 @@
     openSchedule
   );
 
-  $("back-home-button").addEventListener("click", () => {
-    loadingVersion++;
-    showSchedulePage("home-section");
-  });
-
   $("date-range-form").addEventListener(
     "submit",
     async event => {
@@ -137,6 +134,7 @@
   );
 
   async function loadSchedule() {
+    if (deletingSchedule) return;
     if (CircleSave.pending('schedule:')) {
       showScheduleMessage('未保存の変更があります。再保存してから期間を変更してください。');
       return;
@@ -261,7 +259,7 @@
   }
 
   async function toggleSchedule(date, slot, cellButton) {
-    if (loadingSchedule) return;
+    if (loadingSchedule || deletingSchedule) return;
     const user = currentUser;
 
     if (!user) {
@@ -292,10 +290,53 @@
   retry.type='button';retry.addEventListener('click',()=>CircleSave.retry('schedule:'));
   $('schedule-message').after(retry);
 
+  const deleteAll = createElement('button','入力した日程をすべて削除','danger-button');
+  deleteAll.id='schedule-delete-all';
+  deleteAll.type='button';
+  deleteAll.style.display='block';
+  deleteAll.addEventListener('click',async()=>{
+    if (deletingSchedule) return;
+    if (CircleSave.pending('schedule:')) {
+      showScheduleMessage('未保存の変更があります。再保存してから削除してください。');
+      return;
+    }
+    if (!confirm('表示期間外も含め、入力したすべての日程を削除します。元に戻せません。削除しますか？')) return;
+    const version=++loadingVersion;
+    deletingSchedule=true;
+    deleteAll.disabled=true;
+    retry.disabled=true;
+    $('schedule-table').querySelectorAll('button').forEach(button=>{button.disabled=true;});
+    showScheduleMessage('日程を削除中...');
+    try {
+      await getCurrentUser();
+      if (version!==loadingVersion) return;
+      const {error}=await db.rpc('ui_schedule_delete_all');
+      if (error) throw error;
+      if (version!==loadingVersion) return;
+      scheduleData.clear();
+      renderSchedule();
+      showScheduleMessage('入力した日程をすべて削除しました。');
+    } catch(error) {
+      if (version===loadingVersion) showScheduleMessage('削除エラー：'+error.message);
+    } finally {
+      if (version===loadingVersion) {
+        deletingSchedule=false;
+        loadingSchedule=false;
+        deleteAll.disabled=false;
+        retry.disabled=false;
+        $('schedule-table').querySelectorAll('button').forEach(button=>{button.disabled=false;});
+      }
+    }
+  });
+  retry.after(deleteAll);
+
   db.auth.onAuthStateChange(event => {
     if (event === "SIGNED_OUT") {
       loadingVersion++;
       loadingSchedule = false;
+      deletingSchedule = false;
+      deleteAll.disabled = false;
+      retry.disabled = false;
       currentUser = null;
       scheduleData.clear();
       currentDates = [];

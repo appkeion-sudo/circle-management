@@ -52,6 +52,19 @@ test('database migration and authorization regressions', async t => {
       assert.equal(await scalar('SELECT count(*)::int FROM auditions'),before);
     });
 
+    await t.test('audition deletion rejects ordinary members and removes related criteria',async()=>{
+      const target=await create('削除対象');
+      await asUser(3);
+      await assert.rejects(query('SELECT audition_delete($1)',[target]),/部長またはサイト管理者のみ削除できます/);
+      await owner();
+      assert.equal(await scalar('SELECT count(*)::int FROM auditions WHERE id=$1',[target]),1);
+      await asUser(1);
+      await query('SELECT audition_delete($1)',[target]);
+      await owner();
+      assert.equal(await scalar('SELECT count(*)::int FROM auditions WHERE id=$1',[target]),0);
+      assert.equal(await scalar('SELECT count(*)::int FROM audition_criteria WHERE audition_id=$1',[target]),0);
+    });
+
     const audition=await create('審査');
     await owner();
     await query("UPDATE auditions SET entry_deadline='2026-10-30Z' WHERE id=$1",[audition]);
