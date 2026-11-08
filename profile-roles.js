@@ -1,6 +1,7 @@
 "use strict";
 
 (() => {
+  if (!db) return;
   const profileButton = document.getElementById(
     "open-profile-button"
   );

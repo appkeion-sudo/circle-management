@@ -4,15 +4,53 @@
 // Supabase接続
 // ==========================================
 
-// 移行先で新しく作成したSupabaseのURLと公開用キーを入力してください。
+// 静的サイト用の公開設定。Cloudflare Pagesの環境変数は自動では読み込まれません。
+// 既存SupabaseプロジェクトのURLと公開用キーを設定してください。
 // service_roleキーは絶対に使用しないでください。
-const SUPABASE_URL = "";
-const SUPABASE_KEY = "";
+const SUPABASE_URL = "https://cjymelefxesbmbicemvf.supabase.co";
+const SUPABASE_KEY = "sb_publishable_KxSQ8tpQH2rgVwRoirYd2w_WUP6TQRA";
 
-const db = window.supabase.createClient(
-  SUPABASE_URL,
-  SUPABASE_KEY
-);
+let supabaseInitializationError = "";
+const db = (() => {
+  try {
+    const url = SUPABASE_URL.trim();
+    const key = SUPABASE_KEY.trim();
+    const missing = [];
+    if (!url) missing.push("SUPABASE_URL");
+    if (!key) missing.push("SUPABASE_KEY（公開用キー）");
+    if (missing.length) {
+      throw new Error(`app.js の ${missing.join("、")} が未設定です。設定して再デプロイしてください。Cloudflare Pagesの環境変数だけでは静的JavaScriptに反映されません。`);
+    }
+    let parsedUrl;
+    try { parsedUrl = new URL(url); } catch { /* 下で設定エラーを表示する */ }
+    if (!parsedUrl || parsedUrl.protocol !== "https:" || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+      throw new Error("app.js の SUPABASE_URL にSupabaseプロジェクトのHTTPS URLを設定してください。");
+    }
+    // 公開用キーだけを許可する。旧形式はanonロールに限る。
+    let publicKey = /^sb_publishable_[A-Za-z0-9_-]+$/.test(key);
+    if (!publicKey) {
+      try {
+        const payload = key.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+        publicKey = key.split(".").length === 3 && JSON.parse(atob(payload)).role === "anon";
+      } catch { /* 秘密キー・不正なキーは使用しない */ }
+    }
+    if (!publicKey) {
+      throw new Error("app.js の SUPABASE_KEY にはpublishableキーまたはanonキーだけを設定してください。service_role・sb_secret_キーは使用できません。");
+    }
+    if (typeof window.supabase?.createClient !== "function") {
+      throw new Error("Supabase SDKを読み込めませんでした。ネットワーク・CDNへの接続とindex.htmlのスクリプト読み込み順を確認してください。");
+    }
+    try {
+      return window.supabase.createClient(url, key);
+    } catch {
+      // SDKの例外に設定値が含まれる可能性があるため、そのまま表示しない。
+      throw new Error("Supabaseクライアントの初期化に失敗しました。app.jsのURL・公開用キーとSupabase SDKの読み込みを確認してください。");
+    }
+  } catch (error) {
+    supabaseInitializationError = `Supabase設定エラー：${error.message}`;
+    return null;
+  }
+})();
 
 // ==========================================
 // 共通設定
@@ -112,6 +150,7 @@ function isAdmin(context) {
 // ==========================================
 
 async function updateScreen() {
+  if (!db) return;
   const version = ++screenVersion;
 
   const { data, error } = await db.auth.getUser();
@@ -199,6 +238,7 @@ async function updateScreen() {
 document.getElementById(
   "signup-button"
 ).addEventListener("click", async () => {
+  if (!db) return;
 
   const email = emailInput.value.trim();
   const password = passwordInput.value;
@@ -260,6 +300,7 @@ document.getElementById(
 ).addEventListener("submit", async event => {
 
   event.preventDefault();
+  if (!db) return;
 
   const button = document.getElementById(
     "login-button"
@@ -298,6 +339,7 @@ document.getElementById(
 document.getElementById(
   "logout-button"
 ).addEventListener("click", async () => {
+  if (!db) return;
 
   const button = document.getElementById(
     "logout-button"
@@ -333,7 +375,7 @@ document.getElementById(
 // Supabase認証状態の監視
 // ==========================================
 
-db.auth.onAuthStateChange(() => {
+if (db) db.auth.onAuthStateChange(() => {
   // 認証イベント内でSupabaseへの追加通信を
   // 直接awaitせず、次のタスクで画面を更新する
   setTimeout(() => {
@@ -345,4 +387,13 @@ db.auth.onAuthStateChange(() => {
 // 初期表示
 // ==========================================
 
-updateScreen();
+if (db) {
+  updateScreen();
+} else {
+  authSection.hidden = false;
+  showPage(null);
+  message.setAttribute("role", "alert");
+  showMessage(supabaseInitializationError);
+  document.getElementById("login-button").disabled = true;
+  document.getElementById("signup-button").disabled = true;
+}

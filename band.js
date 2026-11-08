@@ -2,6 +2,7 @@
 "use strict";
 
 (() => {
+  if (!db) return;
   const $ = id => document.getElementById(id);
 
   const SLOTS = [1, 2, 3, 4, 5, 6, 7, 8];

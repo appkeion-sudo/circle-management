@@ -1,6 +1,7 @@
 "use strict";
 
 (() => {
+  if (!db) return;
   const $ = id => document.getElementById(id);
 
   let context = null;

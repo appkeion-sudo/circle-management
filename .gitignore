@@ -19,7 +19,3 @@ supabase/.temp/
 # Local shell and browser artifacts
 Microsoft/
 *.log
-
-# Migration export artifacts
-migration-ready/
-migration-ready.zip

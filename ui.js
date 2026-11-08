@@ -1,5 +1,6 @@
 "use strict";
 const CircleUI = (() => {
+  if (!db) return;
   const $ = id => document.getElementById(id);
   const el = (tag,text,cls) => { const e=document.createElement(tag); if(text!==undefined)e.textContent=text; if(cls)e.className=cls; return e; };
   const rpc = async (name,args={}) => {const {data,error}=await db.rpc(name,args);if(error)throw error;return data;};

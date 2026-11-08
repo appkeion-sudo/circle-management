@@ -1,5 +1,6 @@
 "use strict";
 (() => {
+ if (!db) return;
  const $ = id => document.getElementById(id);
  const mk = (tag, text, cls) => {const e=document.createElement(tag);if(text!==undefined)e.textContent=String(text);if(cls)e.className=cls;return e;};
  const add = (parent,...children) => {parent.append(...children);return parent;};

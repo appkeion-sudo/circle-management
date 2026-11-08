@@ -3,20 +3,22 @@
 Supabase Auth・PostgreSQL・Storageを利用する静的サイトです。
 ブラウザには公開用キーだけを設定します。service_roleキーは使用しません。
 
-## 別アカウントへの移行
+## Cloudflare Pagesへの配置（今回のログイン修正）
 
-- ファイルを新しいリポジトリへ移す際は、現在のソースだけをコピーし、新しいGit履歴で開始してください。旧 `.git` には過去の接続設定やコミット作成者情報が残っています。旧履歴のpushやリポジトリのミラー移行は避けてください。
-- `.env`、`.aws`、`.codex`、`.vercel`、`.supabase`、`supabase/.temp`、`Microsoft`、`.tmp`、`node_modules` は移行対象に含めません。端末キャッシュ、ログ、画面キャプチャ、秘密鍵も含めないでください。
-- `app.js` の `SUPABASE_URL` と `SUPABASE_KEY` は空です。移行先で新しく作成したプロジェクトのURLと公開用キーを設定してください。これらはブラウザから閲覧可能になる設定です。秘密キーやservice_roleキーは設定しないでください。
-- 新規Supabaseには、既存システムの基礎テーブル・RPC・認可設定を別途用意する必要があります。**このリポジトリの `setup.sql` だけでは新規DBを構築できません。** `tests/fixtures/database.sql` はテスト用で、本番の構築には使用しないでください。
-- 新しいVercelプロジェクトを移行先リポジトリへ接続してください。旧アカウントの接続情報を再利用しないでください。
-- 過去に秘密キーやパスワードをコミットしていた場合、ファイルから削除しても旧履歴には残るため、該当する認証情報を失効・再発行してください。
+- 接続設定は `app.js` 冒頭の `SUPABASE_URL` と `SUPABASE_KEY` です。既存プロジェクトのURLとpublishableキー（`sb_publishable_...`）または旧anonキーを使用します。これらはブラウザから閲覧できる公開設定です。service_role・`sb_secret_...`・パスワードは書き込まないでください。
+- Vercel固有の設定・環境変数への依存はありません。ビルドを行わない静的サイトのため、Cloudflare Pages側で環境変数を登録するだけでは `app.js` に反映されません。この構成では環境変数の登録は不要です。
+- PagesのGit連携ではフレームワークを `None`、ルートディレクトリをリポジトリのルート、ビルドコマンドを `exit 0`、ビルド出力ディレクトリを `.` にします。公開するブランチとコミットを確認して再デプロイしてください。HTML・CSS・全JavaScriptを一緒に配信します。直接アップロードの場合も同じ静的ファイル一式を使用します。
+- `index.html` はCDNのSupabase SDK、`app.js`、各機能スクリプトの順に読み込みます。URL・キーが空、不正なURL、公開用でないキー、SDKの読み込み失敗はログイン画面に原因を表示し、ログイン・登録と各機能の起動を停止します。
+- 今回の修正ではSupabaseプロジェクト・テーブル・データ・RLS・Auth設定を変更せず、SQLの実行も不要です。以下の「既存サイトへの修正適用」は別のDB機能修正に関する手順です。
+- push前に `git diff -- app.js ui.js schedule.js band.js profile.js profile-roles.js audition.js timetable.js README.md` と新規の `tests/supabase-init.test.mjs` を確認してください。既存の未コミット変更も差分に含まれます。
 
-## 既存DBへの修正適用
+設定の根拠：[Cloudflareの静的HTML配信手順](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)、[SupabaseのAPIキーの説明](https://supabase.com/docs/guides/getting-started/api-keys)。
 
-1. 移行先の対象プロジェクトで、必要な基礎テーブル・RPC・認可設定が構築済みであることを確認します。
+## 既存サイトへの修正適用
+
+1. 対象プロジェクトが `cjymelefxesbmbicemvf` であることを確認します。
 2. Supabase SQL Editorなどの書き込み可能な接続で `setup.sql` を実行します。
-   ファイルを作成しただけでは本番DBは更新されません。
+   現在の読み取り専用MCP接続では適用できません。ファイルを作成しただけでは本番DBは更新されません。
 3. SQLが成功した後、HTML・CSS・JavaScriptを一式デプロイします。
    更新したJavaScriptは新しいRPCを利用するため、DB更新を先に実行してください。
 4. 一般部員と部長で、他バンド名の表示、締切前の取消、採点の再表示、
