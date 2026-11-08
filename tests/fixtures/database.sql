@@ -3,6 +3,7 @@ CREATE ROLE anon;
 CREATE ROLE authenticated;
 CREATE SCHEMA auth;
 CREATE SCHEMA storage;
+CREATE TABLE auth.users(id uuid PRIMARY KEY,email text,raw_user_meta_data jsonb DEFAULT '{}');
 CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
  SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid;
 $$;
@@ -62,8 +63,11 @@ CREATE TABLE public.audition_results (
  valid_votes integer NOT NULL DEFAULT 0,invalid_votes integer NOT NULL DEFAULT 0,
  passed boolean,result_category text,calculated_at timestamptz
 );
-CREATE TABLE storage.buckets(id text PRIMARY KEY,public boolean,file_size_limit bigint);
-INSERT INTO storage.buckets VALUES('band-icons',true,5242880);
+CREATE TABLE storage.buckets(id text PRIMARY KEY,public boolean,file_size_limit bigint,name text,allowed_mime_types text[]);
+INSERT INTO storage.buckets(id,public,file_size_limit) VALUES('band-icons',true,5242880);
+CREATE TABLE storage.objects(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),bucket_id text,name text);
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+GRANT SELECT,INSERT,DELETE ON storage.objects TO authenticated;
 
 CREATE FUNCTION public.is_circle_president() RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path='' AS $$

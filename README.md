@@ -9,7 +9,7 @@ Supabase Auth・PostgreSQL・Storageを利用する静的サイトです。
 - Vercel固有の設定・環境変数への依存はありません。ビルドを行わない静的サイトのため、Cloudflare Pages側で環境変数を登録するだけでは `app.js` に反映されません。この構成では環境変数の登録は不要です。
 - PagesのGit連携ではフレームワークを `None`、ルートディレクトリをリポジトリのルート、ビルドコマンドを `exit 0`、ビルド出力ディレクトリを `.` にします。公開するブランチとコミットを確認して再デプロイしてください。HTML・CSS・全JavaScriptを一緒に配信します。直接アップロードの場合も同じ静的ファイル一式を使用します。
 - `index.html` はCDNのSupabase SDK、`app.js`、各機能スクリプトの順に読み込みます。URL・キーが空、不正なURL、公開用でないキー、SDKの読み込み失敗はログイン画面に原因を表示し、ログイン・登録と各機能の起動を停止します。
-- 今回の修正ではSupabaseプロジェクト・テーブル・データ・RLS・Auth設定を変更せず、SQLの実行も不要です。以下の「既存サイトへの修正適用」は別のDB機能修正に関する手順です。
+- データベースの新規構築・更新には、以下の手順で `setup.sql` を実行してください。接続先を変更した場合は `app.js` のURL・公開キーも更新します。
 - push前に `git diff -- app.js ui.js schedule.js band.js profile.js profile-roles.js audition.js timetable.js README.md` と新規の `tests/supabase-init.test.mjs` を確認してください。既存の未コミット変更も差分に含まれます。
 
 設定の根拠：[Cloudflareの静的HTML配信手順](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)、[SupabaseのAPIキーの説明](https://supabase.com/docs/guides/getting-started/api-keys)。
@@ -58,15 +58,35 @@ Supabase Auth・PostgreSQL・Storageを利用する静的サイトです。
 
 ## SQLファイルの位置づけ
 
-本番用SQLは **`setup.sql`** に統合しています。Supabase SQL Editorでこの1ファイルを実行すると、
-オーディション・前回ライブ・整合性修正・タイムテーブル・UIの更新を依存順に適用します。
+本番用SQLは **`setup.sql`** に統合しています。新しいSupabaseプロジェクトでも、SQL Editorで
+この1ファイル全体を実行するだけで、アプリに必要なデータベースを構築できます。
+プロフィール・部員・役職・部長引き継ぎ・サイト管理者・バンド・予定・オーディション・
+前回ライブ・タイムテーブル・お知らせ・通知のテーブル、RPC、RLS、権限、トリガー、
+`band-icons` 公開バケット（2 MiB、JPEG/PNG/WebP）と画像のアップロード・削除ポリシーを含みます。
+Authへの新規登録時はプロフィールを自動作成し、既存Authユーザーの不足プロフィールも補完します。
 全体を1つのトランザクションで実行するため、途中で失敗した場合は全体をロールバックします。再実行可能です。
 以前の個別更新SQLを実行済みの環境でも、同じ `setup.sql` を使用します。
 
-これは既存DB向けの更新SQLです。認証・部員・バンド管理や初期オーディションテーブル、
-既存のプロフィール・役職RPC（`profile_context()`、`circle_members_admin()`、`circle_roles_list()` など）が必要です。
-新規本番環境の構築一式ではありません。`tests/fixtures/database.sql` はローカルテスト専用で、
-本番構築には使用しないでください。
+新規環境の初期権限は、次の順序で設定します。
+
+1. Supabase Authで初期部長・初期サイト管理者のユーザーを作成します。同じユーザーでも構いません。
+2. `setup.sql` 内の `initial_president_email`・`initial_site_admin_email` の `NULL` を、
+   対応するメールアドレスの文字列（例：`'admin@example.com'`）へ変更します。
+3. SQL Editorで `setup.sql` 全体を実行します。指定ユーザーが見つからなければ、全体を取り消します。
+
+初期権限の設定が不要な既存環境では `NULL` のまま実行できます。先頭登録ユーザーへの自動権限付与は行いません。
+再実行で既存の部長・サイト管理者を置き換えることもありません。
+既存の基盤テーブルとプロフィール・役職・バンドRPCは保持し、不足する定義だけを作成します。
+本番DBのダンプから復元するものではなく、リポジトリの画面・既存SQLの契約に基づく構築SQLです。
+独自に変更された既存スキーマやRPCの内容を、別環境へ複製するものではありません。
+
+Supabase標準の `auth`・`storage` スキーマとロールはSupabaseが用意するものを使用します。
+Authプロバイダー・メール確認・SMTP・リダイレクトURL・APIキーなど、DB外のプロジェクト設定は
+Supabase Dashboardで別途設定します。ユーザー・部員・採点・画像ファイルなどの実データも移行対象には含みません。
+`tests/fixtures/*.sql` はSupabaseの標準部分や旧環境を模したローカルテスト専用で、本番では実行しません。
+
+認証連携と画像権限の参考：[Supabaseのプロフィール作成トリガー](https://supabase.com/docs/guides/auth/managing-user-data)、
+[Storageアクセス制御](https://supabase.com/docs/guides/storage/security/access-control)。
 
 ## 検証
 
@@ -110,8 +130,8 @@ SQLはトランザクション内で実行され、再適用できます。
 
 既存の `profiles`、`circle_president`、`audition_participants`、`audition_entries`、`audition_entry_members` と、
 `circle_members_admin()`（`user_id`, `role_ids`）、`circle_roles_list()`（`id`, `name`, `exclude_from_staff_auto_assign`）、
-`audition_member_year()` を参照します。プロフィール・役職RPCの元テーブル定義は本リポジトリには含まれないため、
-既存画面が利用するRPC契約に合わせています。新設テーブルは直接アクセスを禁止し、部長を確認するRPC経由で更新します。
+`audition_member_year()` を参照します。新規環境では、これらの前提定義も `setup.sql` が作成します。
+既存環境のプロフィール・役職RPCは保持します。新設テーブルは直接アクセスを禁止し、部長を確認するRPC経由で更新します。
 
 操作は次の順です。
 
@@ -134,7 +154,7 @@ SQLはトランザクション内で実行され、再適用できます。
 Excelは文字列セルを使ったOOXML形式です。出力対象は現在表示中の下書きまたは公開版です。
 
 `npm test` は既存の回帰テストに加え、時刻計算・割り当て制約・画面操作・出力構造・DB認可・公開版保持・通知・参加取消・過去ODを検証します。
-DBテストでは本番データに接続せず、既存プロフィール・役職RPCの契約をテスト用に再現しています。
+DBテストでは本番データに接続せず、新規環境の構築・再実行と既存プロフィール・役職RPCとの互換性を検証しています。
 実際のSupabaseプロジェクトへのSQL適用と、実ブラウザ・Excelでの表示確認は別途必要です。
 
 ## UI仕様への対応（2026-11-04 再開分）
