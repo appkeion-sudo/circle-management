@@ -760,6 +760,12 @@ body.signed-in main { margin: 24px 24px 0 260px; width: calc(100% - 284px); max-
   #schedule-table .slot-button { min-height: 40px; }
 }
 @media (prefers-reduced-motion: reduce) { #sidebar { transition: none; } }
+.user-management-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,280px),1fr)); gap: 12px; }
+.user-management-card { min-width: 0; overflow-wrap: anywhere; }
+.user-management-card h3 { margin-top: 0; }
+.user-delete-modal { overflow-wrap: anywhere; box-sizing: border-box; }
+.user-delete-modal input { display: block; width: 100%; box-sizing: border-box; }
+.user-delete-warning { color: #a32945; font-weight: bold; }
 @media (max-width: 600px) {
   .tt-table th, .tt-table td { padding: 8px; }
   .tt-table { min-width: 820px; font-size: .88rem; }

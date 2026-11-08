@@ -370,6 +370,7 @@
 
     <!-- 管理者ツール -->
     <section id="admin-section" hidden>
+      <button id="open-user-management" type="button" hidden>ユーザ管理</button>
       <h2>管理者ツール</h2>
 
       <!-- 入学年度変更申請 -->
@@ -479,6 +480,23 @@
       <p id="admin-message" role="status"></p>
     </section>
 
+    <section id="user-management-section" hidden>
+      <h2>ユーザ管理</h2>
+      <p>登録ユーザを検索し、不要なアカウントを完全削除できます。</p>
+      <button id="users-back" type="button" class="secondary-button">管理画面に戻る</button>
+      <form id="users-search-form">
+        <label for="users-search">ユーザ名・メールアドレスで検索</label>
+        <input id="users-search" type="search" maxlength="200" autocomplete="off">
+        <button type="submit">検索・再読み込み</button>
+      </form>
+      <p id="users-message" role="status" aria-live="polite"></p>
+      <div id="users-list" class="user-management-list"></div>
+      <div class="admin-actions">
+        <button id="users-prev" type="button" class="secondary-button">前の100件</button>
+        <button id="users-next" type="button" class="secondary-button">次の100件</button>
+      </div>
+    </section>
+
     <p id="message" role="status"></p>
   </main>
 
@@ -491,6 +509,7 @@
   <script src="band.js"></script>
   <script src="profile.js"></script>
   <script src="profile-roles.js"></script>
+  <script src="user-management.js"></script>
   <script src="audition.js"></script>
   <script src="timetable-core.js"></script>
   <script src="timetable-export.js"></script>

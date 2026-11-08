@@ -1,0 +1,12 @@
+{
+  "name": "keion-circle",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-01",
+  "build": {"command": "npm run build"},
+  "assets": {"directory": "./dist", "binding": "ASSETS", "run_worker_first": ["/api/*"]},
+  "vars": {
+    "SUPABASE_URL": "https://cjymelefxesbmbicemvf.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_KxSQ8tpQH2rgVwRoirYd2w_WUP6TQRA"
+  },
+  "observability": {"enabled": true}
+}

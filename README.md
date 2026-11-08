@@ -1,5 +1,63 @@
 # 軽音サークル管理サイト
 
+## ユーザ管理・完全削除（2026-11-08）
+
+管理画面の「ユーザ管理」はサイト管理者だけに表示します。ユーザ名・メールアドレスで検索でき、入学年度・役職を100件ずつ表示します。部長だけの権限では利用できません。対象の名前・メールと警告を確認し、「削除」と入力した場合だけ完全削除できます。自分自身・最後のサイト管理者の削除はサーバ側でも拒否します。
+
+### 導入手順
+
+このリポジトリには従来の静的ファイルしかなく、既存Workerのソース・設定や本番Supabaseのスキーマを読み取れるMCPはありませんでした。以下の設定を追加しましたが、本番へのSQL適用・デプロイ・実ユーザの削除は行っていません。既存Workerに独自のルーティングがある場合は `worker.mjs` の `/api/admin/users` をそのWorkerへ統合してください。
+
+1. 本番の外部キー・トリガー・RLSとバックアップを確認してください。既存環境では、レビュー後に **`migrations/20261108_user_management.sql`** をSupabase SQL Editorで実行します。新規構築では同じ定義を統合した `setup.sql` を使います。マイグレーションを実行するだけではユーザを削除しませんが、関数更新・テーブル追加・お知らせの作成者のNULL許容変更を含みます。既存環境で他の変更まで再適用しないよう、今回は専用マイグレーションを使ってください。
+2. 関数の所有者はSupabaseの `postgres` など必要なテーブル更新権限を持つDB管理者にします。`service_role` のみに一覧・削除RPCの実行権限を付与します。`anon`・`authenticated` は実行できません。PostgRESTの公開スキーマに従来どおり `public` が必要です。
+3. Cloudflare Workersに `wrangler.jsonc` を適用し、`SUPABASE_URL`・`SUPABASE_PUBLISHABLE_KEY` がフロントの `app.js` と同じプロジェクトを指すことを確認します。Worker名は実際の公開環境に合わせてください。
+4. Workerの暗号化シークレットに **`SUPABASE_SERVICE_ROLE_KEY`** を登録します。値は対象Supabaseプロジェクトのサーバ専用service_roleキーです。Cloudflareダッシュボードか `npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY` で入力し、Git・HTML・公開環境変数・ログへ含めないでください。ローカルではGit除外済みの `.dev.vars` に設定できます。
+5. `npm run build` で `dist/` に公開ファイルだけをコピーします。Windows PowerShellでnpmの実行ポリシーに制限がある場合は `npm.cmd run build` を使います。Workersのビルドコマンドも環境に応じて調整できます。**リポジトリのルート全体は公開しないでください。** `dist/` にSQL・テスト・Workerソース・秘密情報は入りません。
+6. SQL適用後にWorkerと静的アセットを一緒に配置します（例：`npx wrangler deploy`）。静的ファイルだけのPages配信では削除APIは動きません。`ASSETS` バインディングと `/api/*` のWorker優先実行が必要です。APIは同じオリジンで利用します。
+
+外部キーの読み取り確認例（削除しません）：
+
+```sql
+SELECT c.conrelid::regclass AS source, c.confrelid::regclass AS target,
+       c.conname, pg_get_constraintdef(c.oid) AS definition
+FROM pg_constraint c
+WHERE c.contype = 'f'
+  AND c.confrelid IN ('auth.users'::regclass, 'public.profiles'::regclass)
+ORDER BY c.conrelid::regclass::text, c.conname;
+```
+
+### 削除処理と失敗時の扱い
+
+ブラウザ → 同一オリジンWorker → Supabase Auth `/user` によるトークン検証 → service_role専用RPC、の順で処理します。実行者IDは検証済みAuth応答からWorkerが設定し、クライアントから受け取りません。RPCも実行者のAuth情報と `site_admins` を再確認します。管理者テーブルをロックして権限変更・同時削除と直列化し、UUID型・確認文字列・操作IDを検証します。SQLの値はパラメータで渡します。
+
+Auth管理APIと複数のDB更新を別々に呼び出す方式は採用していません。サーバ専用のSECURITY DEFINER関数が、**同じPostgreSQL接続・同じトランザクション内で `auth.users` 自体を削除**します。Authのセッション・認証プロバイダ情報などはSupabaseの実際の外部キーに従って削除されます。途中の制約違反・トリガー失敗は全更新をロールバックします。本番独自のAuthトリガー・外部連携がある場合、その非トランザクションの副作用は別途検証が必要です。
+
+| データ | 処理 |
+| --- | --- |
+| Auth・profiles | 本人だけ完全削除。Authの従属データは実際のFKに従う |
+| MY予定・バンド所属・役職・入学年度申請・部長移譲申請・本人宛通知・既読 | 本人分だけ削除 |
+| バンド・OD・エントリー・減点・お知らせ | 本体を保持し、作成者・登録者だけNULL化。削除対象が部長なら部長参照もNULL化 |
+| 採点・無効票・出演メンバースナップショット | 本人参照・コメントを削除。得点、無効票判定、自己バンドの採点除外条件だけを、新規の無作為なIDで匿名保存 |
+| オーディション結果 | 順位・合否・票数を保持。再集計も匿名票を含めて従来と同じ条件で計算 |
+| タイムテーブル | 演奏順・時刻・バンドを保持。下書きと公開版の本人情報を除去し、担当枠はNULL（未割り当て）に。リビジョンを進め、古い画面からの保存を拒否 |
+| Storage | 共有バンドアイコン等を消さず、本人所有のオブジェクト・バケットの所有権を実行管理者へ移管。パスと画像の実体は維持 |
+| 監査 | 操作ID・実行者UUID・対象UUID・実行日時を保持。メール・名前・トークンは保存しない |
+
+未知のアプリ側外部キー（CASCADEを含む）がAuth・profilesを参照していた場合は削除を停止します。他の予期しない制約違反でも全体が戻ります。実行中のDBエラーはSupabase PostgreSQLログに操作ID・UUID・SQLSTATEを記録します。Workerログには問い合わせID・操作ID・実行者・対象・結果コードを記録し、HTTP応答には調査用の問い合わせIDを返します。成功監査は `public.user_deletion_audit` でDB管理者が確認できます。
+
+通信切断・タイムアウトでは「削除済み」と「未処理」を断定しません。一覧の再読込を案内し、同じ確認画面から再試行すると同じ操作IDを使います。DBに成功済み操作があれば重複処理せず成功を返します。再読込などで確認画面を作り直した場合は新しい操作IDになりますが、削除済みユーザには対象なしエラーを返し、別ユーザを削除しません。
+
+### 検証と留意点
+
+`npm test` は既存のログイン・新規登録、プロフィール、予定、バンド、OD、タイムテーブル、役職の回帰テストに加え、ローカルPGliteで権限拒否・全体ロールバック・他ユーザ保護・匿名集計・再実行を検証します。WorkerのSupabase HTTP呼出しはモックです。`npm run test:browser` は全Supabase通信とユーザ管理APIをモック化し、1280px・375px・320pxで検索、確認入力、キャンセル、失敗後の再試行、一覧更新、ログアウトを検証します。実ユーザは削除しません。
+
+- 本番のスキーマ・Authの全従属テーブル・Storage所有権移管・Worker設定の実環境検証は未実施です。Supabase管理スキーマの変更に備え、ステージングでの導入確認が必要です。Storageはファイルの実体を削除せず所有権だけを変更するため、共有画像のURLは維持されます。
+- 削除後も発行済みのJWTは有効期限まで署名上有効です。新しいユーザ管理APIはAuthへ照会して拒否し、プロフィール削除により管理者権限・所属はなくなりますが、既存の全RPCのセッション失効方式は変更していません。必要に応じてJWT有効期限の短縮、PostgRESTのpre-request検証を別途設定してください。
+- 係に空きができるため、今後のODは部長が未割り当て枠を確認してください。公開版も本人参照を除去しますが、自動再公開や他のメンバーへの変更通知は発行しません。
+- 匿名化した採点者は実ユーザ一覧・採点者一覧には出ません。削除前の無効票判定は固定され、削除後に本人の採点を編集することはできません。共有のお知らせ本文・バンド名などの自由記述は、本人が書いたという理由では削除しません。
+
+設計の根拠：[Supabaseのユーザ削除・JWT・Storage所有権](https://supabase.com/docs/guides/auth/managing-user-data)、[PostgreSQLのトランザクション内のトリガー](https://www.postgresql.org/docs/current/trigger-definition.html)、[Cloudflare Workersの静的アセット設定](https://developers.cloudflare.com/workers/static-assets/binding/)。
+
 Supabase Auth・PostgreSQL・Storageを利用する静的サイトです。
 ブラウザには公開用キーだけを設定します。service_roleキーは使用しません。
 
