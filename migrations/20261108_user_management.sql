@@ -102,7 +102,7 @@ BEGIN
     'public.ui_event_notifications.user_id','public.ui_timetable_reads.user_id'))
    OR (c.confrelid='auth.users'::regclass AND n.nspname<>'auth'
     AND n.nspname||'.'||r.relname||'.'||att.attname NOT IN (
-     'public.profiles.id','storage.objects.owner','storage.objects.owner_id',
+     'public.takoika_bests.user_id','public.profiles.id','storage.objects.owner','storage.objects.owner_id',
      'storage.buckets.owner','storage.buckets.owner_id'))
   )
  ) THEN RAISE EXCEPTION USING ERRCODE='KA412',MESSAGE='未確認のユーザ依存関係があります。DB構造を確認してください'; END IF;

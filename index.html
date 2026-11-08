@@ -497,6 +497,35 @@
       </div>
     </section>
 
+    <section id="takoika-section" hidden aria-labelledby="takoika-title">
+      <button id="takoika-back" type="button" class="secondary-button">ホームに戻る</button>
+      <div class="takoika-stage">
+        <p class="takoika-eyebrow">サークルの小さな運だめし</p>
+        <h2 id="takoika-title">タコイカゲーム</h2>
+        <p>タコなら +1、イカなら終了。<br>どちらのツボも、タコの確率は50%。</p>
+        <p class="takoika-score"><span id="takoika-score">0</span> <span>匹</span></p>
+        <p id="takoika-cue" role="status" aria-live="polite">ツボをひとつ選んでね</p>
+        <div id="takoika-pots" class="takoika-pots">
+          <button type="button" class="takoika-pot" aria-label="左のツボを選ぶ"><span class="takoika-sprite"><img src="assets/takoika/pot.png" alt="ツボ" width="96" height="96"></span><span>左のツボ</span></button>
+          <button type="button" class="takoika-pot" aria-label="右のツボを選ぶ"><span class="takoika-sprite"><img src="assets/takoika/pot.png" alt="ツボ" width="96" height="96"></span><span>右のツボ</span></button>
+        </div>
+        <div id="takoika-result" hidden>
+          <h3>イカが出た！</h3>
+          <p>今回の記録: <strong id="takoika-final">0匹</strong></p>
+          <p>自己ベスト: <strong id="takoika-best">—</strong></p>
+          <p>現在の順位: <strong id="takoika-rank">—</strong></p>
+          <button id="takoika-again" type="button">もう一度プレイ</button>
+        </div>
+      </div>
+      <p id="takoika-save-status" role="status" aria-live="polite"></p>
+      <button id="takoika-save-retry" type="button" class="secondary-button" hidden>記録の保存を再試行</button>
+      <div class="takoika-ranking">
+        <h3>みんなの自己ベスト</h3>
+        <p id="takoika-ranking-status" role="status" aria-live="polite"></p>
+        <button id="takoika-refresh" type="button" class="secondary-button">ランキングを再読み込み</button>
+        <ol id="takoika-ranking-list" class="takoika-ranking-list" aria-label="全ユーザーランキング"></ol>
+      </div>
+    </section>
     <p id="message" role="status"></p>
   </main>
 
@@ -505,6 +534,7 @@
   <script src="app.js"></script>
   <script src="autosave.js"></script>
   <script src="ui.js"></script>
+  <script src="takoika.js"></script>
   <script src="schedule.js"></script>
   <script src="band.js"></script>
   <script src="profile.js"></script>

@@ -8,3 +8,7 @@ for (const file of ['index.html','style.css',...scripts]) {
   if (!/^[a-z0-9-]+\.(html|css|js)$/.test(file)) throw Error('Invalid asset name');
   await copyFile(new URL(file,root), new URL('dist/'+file,root));
 }
+await mkdir(new URL('dist/assets/takoika/', root), {recursive:true});
+for (const file of ['pot.png','octopus.png','squid.png']) {
+  await copyFile(new URL('assets/takoika/'+file,root), new URL('dist/assets/takoika/'+file,root));
+}

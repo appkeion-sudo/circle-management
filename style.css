@@ -8,6 +8,30 @@
   background: #f7f5ff;
 }
 
+/* タコイカ: small pixel sprites on a quiet seaside stage. */
+.takoika-stage { margin-top:20px; padding:24px 16px; border:1px solid #c8e2db; border-radius:16px; background:linear-gradient(#f2fbf7,#e2f2ef); text-align:center; }
+.takoika-eyebrow { color:#376855; font-size:.8rem; letter-spacing:.12em; }
+.takoika-stage h2 { font-size:1.65rem; }
+.takoika-score { margin:14px 0; font-weight:800; color:#22634d; }
+.takoika-score > span:first-child { font-size:3.5rem; line-height:1; }
+.takoika-pots { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; max-width:360px; margin:0 auto; }
+.takoika-pot { background:#ffffffc9; border:2px solid #b8d7cc; color:#33564a; min-height:158px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; }
+.takoika-pot:disabled { opacity:1; cursor:default; }
+.takoika-pot:focus-visible { outline:3px solid #22634d; outline-offset:3px; }
+.takoika-sprite { display:block; width:96px; height:96px; }
+.takoika-sprite img { width:96px; height:96px; image-rendering:pixelated; object-fit:contain; }
+.takoika-pot.is-shaking img { animation:takoika-shake .28s ease-in-out; }
+.takoika-pot.is-revealed img { animation:takoika-pop .25s ease-out; }
+.takoika-ranking { margin-top:28px; }
+.takoika-ranking-list { list-style:none; padding:0; }
+.takoika-ranking-list li { display:grid; grid-template-columns:3.5em minmax(0,1fr) auto; gap:8px; align-items:center; padding:14px 10px; border-bottom:1px solid #e0e9e5; }
+.takoika-ranking-list span:nth-child(2) { overflow-wrap:anywhere; }
+.takoika-ranking-list span:last-child { font-weight:700; }
+.takoika-ranking-list .is-me { background:#e4f3e9; border-radius:8px; }
+@keyframes takoika-shake { 25%,75% { transform:rotate(-8deg); } 50% { transform:rotate(8deg); } }
+@keyframes takoika-pop { from { transform:translateY(18px) scale(.8); opacity:.3; } to { transform:translateY(0) scale(1); opacity:1; } }
+@media (prefers-reduced-motion:reduce) { .takoika-pot.is-shaking img,.takoika-pot.is-revealed img { animation:none; } }
+
 * {
   box-sizing: border-box;
 }

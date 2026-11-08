@@ -65,6 +65,7 @@ const passwordInput = document.getElementById("password");
 const usernameInput = document.getElementById("username");
 
 const PAGE_IDS = [
+  "takoika-section",
   "timetable-section",
   "home-section",
   "schedule-section",
