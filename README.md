@@ -1,273 +1,141 @@
-# 軽音サークル管理サイト
+# 軽音サークル管理サイト 引き継ぎ
 
-## タコイカゲーム（2026-11-08）
+部員のプロフィール、予定、バンド、オーディション（OD）とタイムテーブルを管理するサイトです。画面は HTML・CSS・JavaScript で構成し、認証・データベース・画像保存に Supabase を使用します。
 
-設定の「ログアウト」直下の「タコイカゲーム」から遊べます。タコで+1、イカで終了し、自己ベストを全メンバーのランキングに表示します。同点は競技順位（1位、2位、2位、4位）です。Q15の開始方法は暫定で開始ボタンなしとし、画面を開くとツボを選べます。途中離脱で進行中スコアを破棄します。
+## 引き継ぎ時に確認すること
 
-既存環境では **`migrations/20261108_takoika.sql`** をSQL Editor等で適用してから、`npm run build` で生成した `dist/` を既存の配信先へ反映してください。新規環境用の `setup.sql` にも統合済みです。今回、本番DBへの適用・配信は行っていません。
+- Supabase プロジェクト（`cjymelefxesbmbicemvf`）、Cloudflare の配信プロジェクト、Git リポジトリに後任がアクセスできることを確認します。Cloudflare の公開ブランチとカスタムドメインも引き継ぎます。
+- アプリ内の部長交代は、現部長がプロフィールから申請し、後任が承認します。現部長が操作できない場合はサイト管理者が「部長を再設定」を使えます。サイト管理者の交代時は、先に後任へ権限を付与し、操作できることを確認してから旧担当者の権限を解除します。
+- 退会者などのアカウントは、Supabase の SQL Editor で UID を確認して手動削除します。関連データの調べ方、バンドを残す SQL、削除後の確認方法は [ユーザ手動削除手順](#supabase-でのユーザ手動削除) にあります。部長や採点者を削除する場合は、引き継ぎや採点履歴の扱いを先に確認します。
 
-- `takoika.js`、`index.html`、`style.css` にゲーム・結果・全件ランキングを追加し、`ui.js` の設定と `app.js` の画面切替に接続しています。
-- `takoika_bests` はAuthユーザーを参照し、完全削除で本人の記録だけ連動削除します。既存の完全削除RPCの依存関係チェックにも、この外部キーだけを追加します。独自変更でチェック形式が異なる場合はマイグレーションを取り消すため、内容を確認してください。
-- 書き込みは認証済み本人を識別する `takoika_save_best` RPCのみ許可し、競合時も高い記録だけを保存します。0点の新規登録と同点の更新は行いません。`takoika_ranking` はユーザーID・名前・記録・順位のみを返し、件数制限に依存せず全記録者を取得します。
-- 取得・保存に失敗した場合は再試行できます。保存未確認の状態で再挑戦や画面移動をすると、その記録は破棄します。
-- 同梱PNGがなかったため、`assets/takoika/` にオリジナルの透過ドット絵3枚を用意しています。再生成は `node scripts/create-takoika-assets.mjs` です。
-- `tests/takoika-database.test.mjs` と拡張した `tests/browser-smoke.mjs` で、自己ベスト・同順位・認可・削除連動・通信失敗・連打・離脱・スマートフォン表示を検証します。本番の認証・DB接続を使った確認はSQL適用後に必要です。
+## 既存環境への反映
 
-## ユーザ管理・完全削除（2026-11-08）
+1. Supabase の SQL Editor で [旧ユーザ管理 RPC の廃止 SQL](migrations/20261126_remove_user_management.sql) を実行します。この移行はアプリから使っていた一覧・削除用の DB 関数を削除します。既存の監査記録と匿名化済みの採点は、過去の確認と OD の再集計に使えるよう保持します。
+2. Cloudflare Pages で静的サイトをデプロイします。Git 連携の場合はフレームワークを `None`、ビルドコマンドを `npm run build`、出力ディレクトリを `dist` に設定します。直接アップロード方式の場合は、ローカルでビルドした `dist/` をアップロードします。 [Cloudflare Pages のビルド設定](https://developers.cloudflare.com/pages/configuration/build-configuration/) · [直接アップロード](https://developers.cloudflare.com/pages/get-started/direct-upload/)
+3. 旧 Worker をデプロイしていた場合は、公開先の切り替えを確認し、旧 API のルートと、その Worker 専用に設定した `SUPABASE_SERVICE_ROLE_KEY` のシークレット登録を解除します。
+4. 一般部員と部長またはサイト管理者でログインし、プロフィール・予定・バンド・OD と、設定の「メンバー・役職管理」が利用できることを確認します。旧ユーザ管理ボタンが消えていることも確認します。
 
-管理画面の「ユーザ管理」はサイト管理者だけに表示します。ユーザ名・メールアドレスで検索でき、入学年度・役職を100件ずつ表示します。部長だけの権限では利用できません。対象の名前・メールと警告を確認し、「削除」と入力した場合だけ完全削除できます。自分自身・最後のサイト管理者の削除はサーバ側でも拒否します。
+タコイカゲームを既存環境に初めて入れる場合は、配信前に [ゲーム用マイグレーション](migrations/20261108_takoika.sql) を適用します。
 
-### 導入手順
+## 新規環境のセットアップ
 
-このリポジトリには従来の静的ファイルしかなく、既存Workerのソース・設定や本番Supabaseのスキーマを読み取れるMCPはありませんでした。以下の設定を追加しましたが、本番へのSQL適用・デプロイ・実ユーザの削除は行っていません。既存Workerに独自のルーティングがある場合は `worker.mjs` の `/api/admin/users` をそのWorkerへ統合してください。
+1. Supabase Dashboard で Auth のメール確認、SMTP、公開サイトのリダイレクト URL を設定し、初期部長・サイト管理者の Auth ユーザを作成します。同じユーザを指定できます。
+2. [setup.sql](setup.sql) の `initial_president_email` と `initial_site_admin_email` に対象のメールアドレスを設定し、ファイル全体を SQL Editor で実行します。プロフィールの自動作成、RLS、アプリ用の RPC、画像用の `band-icons` バケットを構築します。バンド画像は JPEG・PNG・WebP で上限は 2 MiB です。
+3. [app.js](app.js) 冒頭の `SUPABASE_URL` と `SUPABASE_KEY` を変更します。ブラウザに設定するキーは publishable キーまたは旧 anon キーです。サービスロールキーやパスワードはソースへ置かないでください。
+4. `npm run build` で生成した `dist/` を配信します。ルートディレクトリには SQL やテストがあるため、公開範囲は `dist/` にします。
 
-1. 本番の外部キー・トリガー・RLSとバックアップを確認してください。既存環境では、レビュー後に **`migrations/20261108_user_management.sql`** をSupabase SQL Editorで実行します。新規構築では同じ定義を統合した `setup.sql` を使います。マイグレーションを実行するだけではユーザを削除しませんが、関数更新・テーブル追加・お知らせの作成者のNULL許容変更を含みます。既存環境で他の変更まで再適用しないよう、今回は専用マイグレーションを使ってください。
-2. 関数の所有者はSupabaseの `postgres` など必要なテーブル更新権限を持つDB管理者にします。`service_role` のみに一覧・削除RPCの実行権限を付与します。`anon`・`authenticated` は実行できません。PostgRESTの公開スキーマに従来どおり `public` が必要です。
-3. Cloudflare Workersに `wrangler.jsonc` を適用し、`SUPABASE_URL`・`SUPABASE_PUBLISHABLE_KEY` がフロントの `app.js` と同じプロジェクトを指すことを確認します。Worker名は実際の公開環境に合わせてください。
-4. Workerの暗号化シークレットに **`SUPABASE_SERVICE_ROLE_KEY`** を登録します。値には対象Supabaseプロジェクトのサーバ専用シークレットキー（`sb_secret_` で始まるもの）または従来の `service_role` JWTを使えます。Cloudflareダッシュボードか `npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY` で入力し、Git・HTML・公開環境変数・ログへ含めないでください。ローカルではGit除外済みの `.dev.vars` に設定できます。
-5. `npm run build` で `dist/` に公開ファイルだけをコピーします。Windows PowerShellでnpmの実行ポリシーに制限がある場合は `npm.cmd run build` を使います。Workersのビルドコマンドも環境に応じて調整できます。**リポジトリのルート全体は公開しないでください。** `dist/` にSQL・テスト・Workerソース・秘密情報は入りません。
-6. SQL適用後にWorkerと静的アセットを一緒に配置します（例：`npx wrangler deploy`）。静的ファイルだけのPages配信では削除APIは動きません。`ASSETS` バインディングと `/api/*` のWorker優先実行が必要です。APIは同じオリジンで利用します。
+既存のユーザ、予定、採点や画像を別の Supabase プロジェクトへ移す場合は、データ移行を別途行います。
 
-外部キーの読み取り確認例（削除しません）：
+## 日常の運用
+
+- **メンバー・役職管理**では、権限に応じて入学年度の変更申請、役職、部員情報、部長の引き継ぎや復旧を扱います。
+- **MYスケジュール**はセルごとに自動保存します。保存エラーが出たときは「再保存」で再試行します。「入力した日程をすべて削除」は本人の全期間の入力を削除します。
+- **OD**は参加登録・バンドエントリー、採点、部長による集計・合否決定・公開の順に進めます。前回ライブを指定した OD では、実際に出演したバンドにエントリー制限がかかります。
+- **ODタイムテーブル**は、演奏順を確定してから生成し、時間・休憩・係を調整して公開します。公開時の変更は対象者にサイト内通知されます。公開済みの過去 OD は閲覧と出力に使えます。 [タイムテーブル仕様](timetable.md)
+- **タコイカゲーム**は設定から開きます。ランキングは自己ベストを使い、同点は同順位です。 [ゲーム仕様](TAKOIKA_GAME_SPEC.md)
+
+## Supabase でのユーザ手動削除
+
+Supabase Dashboard で、`app.js` の `SUPABASE_URL` に対応するプロジェクトを開き、**SQL Editor** で実行します。Auth ユーザを削除すると、外部キーの `ON DELETE CASCADE` により、本人のプロフィールや予定も削除されます。
+
+### 1. 削除前に確認する
+
+1. **Authentication → Users** で対象の UID を確認します。
+2. 次の確認 SQL の `対象のUIDに置換` を実際の UID に差し替えて実行し、関連データの件数と、作成したバンドの ID を控えます。
 
 ```sql
-SELECT c.conrelid::regclass AS source, c.confrelid::regclass AS target,
-       c.conname, pg_get_constraintdef(c.oid) AS definition
-FROM pg_constraint c
-WHERE c.contype = 'f'
-  AND c.confrelid IN ('auth.users'::regclass, 'public.profiles'::regclass)
-ORDER BY c.conrelid::regclass::text, c.conname;
+with target as (
+  select '対象のUIDに置換'::uuid as uid
+)
+select
+  (select count(*) from auth.users where id = t.uid) as auth_users,
+  (select count(*) from public.profiles where id = t.uid) as profiles,
+  (select count(*) from public.schedules where user_id = t.uid) as schedules,
+  (select array_agg(id) from public.bands where created_by = t.uid) as created_band_ids,
+  (select count(*) from storage.objects where owner_id = t.uid::text or owner = t.uid) as owned_objects,
+  (select count(*) from storage.buckets where owner_id = t.uid::text or owner = t.uid) as owned_buckets
+from target t;
 ```
 
-ユーザ管理を開いたときに Worker のログに `PGRST202` が出る場合は、Worker の `SUPABASE_URL` が指すプロジェクトの SQL Editor で関数の有無を確認します。
+3. `auth.users` と `public.profiles` を参照する外部キーを確認します。部長・部長移譲・入学年度の審査・OD の採点などに該当する行がある場合は、そのデータの扱いを決めてから削除します。Storage の所有データがある場合は、先に削除または所有権の移管を行います。［[Supabase のユーザ管理](https://supabase.com/docs/guides/auth/managing-user-data#deleting-users)］
 
 ```sql
-SELECT to_regprocedure('public.admin_users_list(uuid,text,integer)') AS list_rpc,
-       to_regprocedure('public.admin_user_delete(uuid,uuid,uuid,text)') AS delete_rpc;
+select
+  confrelid::regclass as referenced_table,
+  conrelid::regclass as referencing_table,
+  conname as constraint_name,
+  pg_get_constraintdef(oid) as definition
+from pg_constraint
+where contype = 'f'
+  and confrelid in ('auth.users'::regclass, 'public.profiles'::regclass)
+order by 1, 2, 3;
 ```
 
-どちらかが `NULL` なら、導入手順に従って `migrations/20261108_user_management.sql` を適用します。両方が存在する場合は `NOTIFY pgrst, 'reload schema';` を実行して一覧を開き直します。それでも `PGRST202` が続く場合は、Data API の公開スキーマに `public` が含まれ、一覧関数の引数名が `p_actor`、`p_search`、`p_offset` になっていることを確認します。
+### 2. バンドを残して Auth ユーザを削除する
 
-### 削除処理と失敗時の扱い
+確認した関連データが今回と同じ扱いでよい場合は、以下の SQL の UID を差し替え、ブロック全体を一度に実行します。今回の削除では Supabase の SQL 接続から同じブロックを実行しました。
 
-ブラウザ → 同一オリジンWorker → Supabase Auth `/user` によるトークン検証 → service_role専用RPC、の順で処理します。実行者IDは検証済みAuth応答からWorkerが設定し、クライアントから受け取りません。RPCも実行者のAuth情報と `site_admins` を再確認します。管理者テーブルをロックして権限変更・同時削除と直列化し、UUID型・確認文字列・操作IDを検証します。SQLの値はパラメータで渡します。
+`public.bands.created_by` には削除を制限する外部キーがあるため、先に対象の UID を `NULL` にします。ブロックの途中で外部キー違反などが発生すると、バンドの更新も含めてロールバックされます。
 
-Auth管理APIと複数のDB更新を別々に呼び出す方式は採用していません。サーバ専用のSECURITY DEFINER関数が、**同じPostgreSQL接続・同じトランザクション内で `auth.users` 自体を削除**します。Authのセッション・認証プロバイダ情報などはSupabaseの実際の外部キーに従って削除されます。途中の制約違反・トリガー失敗は全更新をロールバックします。本番独自のAuthトリガー・外部連携がある場合、その非トランザクションの副作用は別途検証が必要です。
+```sql
+do $$
+declare
+  target_uid constant uuid := '対象のUIDに置換';
+begin
+  perform 1 from auth.users where id = target_uid for update;
+  if not found then
+    raise exception 'Auth user not found: %', target_uid;
+  end if;
 
-| データ | 処理 |
-| --- | --- |
-| Auth・profiles | 本人だけ完全削除。Authの従属データは実際のFKに従う |
-| MY予定・バンド所属・役職・入学年度申請・部長移譲申請・本人宛通知・既読 | 本人分だけ削除 |
-| バンド・OD・エントリー・減点・お知らせ | 本体を保持し、作成者・登録者だけNULL化。削除対象が部長なら部長参照もNULL化 |
-| 採点・無効票・出演メンバースナップショット | 本人参照・コメントを削除。得点、無効票判定、自己バンドの採点除外条件だけを、新規の無作為なIDで匿名保存 |
-| オーディション結果 | 順位・合否・票数を保持。再集計も匿名票を含めて従来と同じ条件で計算 |
-| タイムテーブル | 演奏順・時刻・バンドを保持。下書きと公開版の本人情報を除去し、担当枠はNULL（未割り当て）に。リビジョンを進め、古い画面からの保存を拒否 |
-| Storage | 共有バンドアイコン等を消さず、本人所有のオブジェクト・バケットの所有権を実行管理者へ移管。パスと画像の実体は維持 |
-| 監査 | 操作ID・実行者UUID・対象UUID・実行日時を保持。メール・名前・トークンは保存しない |
+  if exists (select 1 from storage.objects where owner_id = target_uid::text or owner = target_uid)
+     or exists (select 1 from storage.buckets where owner_id = target_uid::text or owner = target_uid) then
+    raise exception 'Storage ownership must be handled first: %', target_uid;
+  end if;
 
-未知のアプリ側外部キー（CASCADEを含む）がAuth・profilesを参照していた場合は削除を停止します。他の予期しない制約違反でも全体が戻ります。実行中のDBエラーはSupabase PostgreSQLログに操作ID・UUID・SQLSTATEを記録します。Workerログには問い合わせID・操作ID・実行者・対象・結果コードを記録し、HTTP応答には調査用の問い合わせIDを返します。成功監査は `public.user_deletion_audit` でDB管理者が確認できます。
+  update public.bands
+  set created_by = null
+  where created_by = target_uid;
 
-通信切断・タイムアウトでは「削除済み」と「未処理」を断定しません。一覧の再読込を案内し、同じ確認画面から再試行すると同じ操作IDを使います。DBに成功済み操作があれば重複処理せず成功を返します。再読込などで確認画面を作り直した場合は新しい操作IDになりますが、削除済みユーザには対象なしエラーを返し、別ユーザを削除しません。
+  delete from auth.users
+  where id = target_uid;
 
-### 検証と留意点
+  if not found then
+    raise exception 'Auth user was not deleted: %', target_uid;
+  end if;
+end;
+$$;
+```
 
-`npm test` は既存のログイン・新規登録、プロフィール、予定、バンド、OD、タイムテーブル、役職の回帰テストに加え、ローカルPGliteで権限拒否・全体ロールバック・他ユーザ保護・匿名集計・再実行を検証します。WorkerのSupabase HTTP呼出しはモックです。`npm run test:browser` は全Supabase通信とユーザ管理APIをモック化し、1280px・375px・320pxで検索、確認入力、キャンセル、失敗後の再試行、一覧更新、ログアウトを検証します。実ユーザは削除しません。
+### 3. 削除結果を確認する
 
-- 本番のスキーマ・Authの全従属テーブル・Storage所有権移管・Worker設定の実環境検証は未実施です。Supabase管理スキーマの変更に備え、ステージングでの導入確認が必要です。Storageはファイルの実体を削除せず所有権だけを変更するため、共有画像のURLは維持されます。
-- 削除後も発行済みのJWTは有効期限まで署名上有効です。新しいユーザ管理APIはAuthへ照会して拒否し、プロフィール削除により管理者権限・所属はなくなりますが、既存の全RPCのセッション失効方式は変更していません。必要に応じてJWT有効期限の短縮、PostgRESTのpre-request検証を別途設定してください。
-- 係に空きができるため、今後のODは部長が未割り当て枠を確認してください。公開版も本人参照を除去しますが、自動再公開や他のメンバーへの変更通知は発行しません。
-- 匿名化した採点者は実ユーザ一覧・採点者一覧には出ません。削除前の無効票判定は固定され、削除後に本人の採点を編集することはできません。共有のお知らせ本文・バンド名などの自由記述は、本人が書いたという理由では削除しません。
+手順 1 の確認 SQL を同じ UID で再実行し、`auth_users`、`profiles`、`schedules` がすべて 0 件になったことを確認します。バンドは手順 1 で控えた ID で検索し、行が残り `created_by` が `NULL` になっていることを確認します。
 
-設計の根拠：[Supabaseのユーザ削除・JWT・Storage所有権](https://supabase.com/docs/guides/auth/managing-user-data)、[PostgreSQLのトランザクション内のトリガー](https://www.postgresql.org/docs/current/trigger-definition.html)、[Cloudflare Workersの静的アセット設定](https://developers.cloudflare.com/workers/static-assets/binding/)。
+削除前に発行されたアクセストークン（JWT）は、有効期限まで有効な場合があります。［[Supabase のアクセストークンとユーザ削除](https://supabase.com/docs/guides/auth/managing-user-data#removing-account-access)］
 
-Supabase Auth・PostgreSQL・Storageを利用する静的サイトです。
-ブラウザには公開用キーだけを設定します。service_roleキーは使用しません。
+### 実行結果
 
-## Cloudflare Pagesへの配置（今回のログイン修正）
+2026-11-26 に UID `5915aeca-e545-424f-852e-1d983d7251f8` で実行しました。
 
-- 接続設定は `app.js` 冒頭の `SUPABASE_URL` と `SUPABASE_KEY` です。既存プロジェクトのURLとpublishableキー（`sb_publishable_...`）または旧anonキーを使用します。これらはブラウザから閲覧できる公開設定です。service_role・`sb_secret_...`・パスワードは書き込まないでください。
-- Vercel固有の設定・環境変数への依存はありません。ビルドを行わない静的サイトのため、Cloudflare Pages側で環境変数を登録するだけでは `app.js` に反映されません。この構成では環境変数の登録は不要です。
-- PagesのGit連携ではフレームワークを `None`、ルートディレクトリをリポジトリのルート、ビルドコマンドを `exit 0`、ビルド出力ディレクトリを `.` にします。公開するブランチとコミットを確認して再デプロイしてください。HTML・CSS・全JavaScriptを一緒に配信します。直接アップロードの場合も同じ静的ファイル一式を使用します。
-- `index.html` はCDNのSupabase SDK、`app.js`、各機能スクリプトの順に読み込みます。URL・キーが空、不正なURL、公開用でないキー、SDKの読み込み失敗はログイン画面に原因を表示し、ログイン・登録と各機能の起動を停止します。
-- データベースの新規構築・更新には、以下の手順で `setup.sql` を実行してください。接続先を変更した場合は `app.js` のURL・公開キーも更新します。
-- push前に `git diff -- app.js ui.js schedule.js band.js profile.js profile-roles.js audition.js timetable.js README.md` と新規の `tests/supabase-init.test.mjs` を確認してください。既存の未コミット変更も差分に含まれます。
+| 確認対象 | 削除前 | 削除後 |
+| --- | ---: | ---: |
+| Auth ユーザ | 1 | 0 |
+| プロフィール | 1 | 0 |
+| 予定 | 62 | 0 |
+| 対象 UID を作成者として参照するバンド | 1 | 0 |
 
-設定の根拠：[Cloudflareの静的HTML配信手順](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)、[SupabaseのAPIキーの説明](https://supabase.com/docs/guides/getting-started/api-keys)。
+対象のバンド（ID `f3cec0c1-8084-4f99-b030-5626a0040132`）は、`created_by = NULL` で残っていることを確認しました。
 
-## 既存サイトへの修正適用
-
-1. 対象プロジェクトが `cjymelefxesbmbicemvf` であることを確認します。
-2. Supabase SQL Editorなどの書き込み可能な接続で `setup.sql` を実行します。
-   現在の読み取り専用MCP接続では適用できません。ファイルを作成しただけでは本番DBは更新されません。
-3. SQLが成功した後、HTML・CSS・JavaScriptを一式デプロイします。
-   更新したJavaScriptは新しいRPCを利用するため、DB更新を先に実行してください。
-4. 一般部員と部長で、他バンド名の表示、締切前の取消、採点の再表示、
-   合否設定、無効票変更後の再集計、結果公開を確認します。
-
-`setup.sql` はトランザクション単位で適用します。再実行可能です。
-既存の部員・予定・採点・合否は削除しません。受付中／下書きのエントリーについては、
-保存済みメンバーと現在のプロフィールを使って1年生判定を修正します。
-採点開始後・公開済みの判定は履歴として維持します。
-`band-icons` バケットのアップロード上限を、画面と同じ2 MiBに揃えます。
-上限変更によって既存の画像が削除されることはありません。
-
-この修正では以下を揃えています。
-
-- 締切前・受付中の所属バンドのエントリー取消と、その権限検証。
-- 所属外バンドのメンバー情報を公開せず、オーディションのバンド名を返す専用RPC。
-- 本体作成と前回ライブ指定を1つのRPCで実行し、失敗時はまとめて取り消す処理。
-- 4月始まり・日本時間・学年例外設定に対応した1年生判定。年度不明の人は1年生扱いにしません。
-- 一般枠／1年生枠の人数上限と、1年生枠の資格の検証。公開時にも再検証します。
-- 再集計時の合否保持。順位や得点が変わった場合の合否判断は引き続き部長が行います。
-- 自分が保存した採点・感想の復元。他人の個別点数は返しません。
-- 既存の公開バケットの画像URL表示と、バンド作成失敗時の未使用画像の後片付け。
-- プロフィールの役職欄の重複解消と、全画面共通の表示切り替え。
-
-## 前回ライブとエントリー
-
-結果公開済みのオーディションで、部長が「実際の出演バンド」にチェックします。
-新規オーディション作成時にその前回ライブを選ぶと、同じバンドIDのエントリーを拒否します。
-前回ライブを指定しなければ、この制限はかかりません。
-同じオーディション内で、他のエントリーバンドとメンバーが3人以上重複する場合も拒否します。
-既に登録した同一バンドを再度エントリーしても、エントリー行は重複しません。
-
-取消は、受付中かつ締切前に、現在そのバンドに所属しているメンバーが実行できます。
-ライブの出演履歴はエントリーとは別に管理し、次回が受付開始した後は変更できません。
-1年生判定の基準日はエントリー締切日です。全メンバーがその日の学年で1年生の場合に限ります。
-学年の例外設定があればそれを優先し、なければ4月始まりの年度と入学年度から算出します。
-
-## SQLファイルの位置づけ
-
-本番用SQLは **`setup.sql`** に統合しています。新しいSupabaseプロジェクトでも、SQL Editorで
-この1ファイル全体を実行するだけで、アプリに必要なデータベースを構築できます。
-プロフィール・部員・役職・部長引き継ぎ・サイト管理者・バンド・予定・オーディション・
-前回ライブ・タイムテーブル・お知らせ・通知のテーブル、RPC、RLS、権限、トリガー、
-`band-icons` 公開バケット（2 MiB、JPEG/PNG/WebP）と画像のアップロード・削除ポリシーを含みます。
-Authへの新規登録時はプロフィールを自動作成し、既存Authユーザーの不足プロフィールも補完します。
-全体を1つのトランザクションで実行するため、途中で失敗した場合は全体をロールバックします。再実行可能です。
-以前の個別更新SQLを実行済みの環境でも、同じ `setup.sql` を使用します。
-
-新規環境の初期権限は、次の順序で設定します。
-
-1. Supabase Authで初期部長・初期サイト管理者のユーザーを作成します。同じユーザーでも構いません。
-2. `setup.sql` 内の `initial_president_email`・`initial_site_admin_email` の `NULL` を、
-   対応するメールアドレスの文字列（例：`'admin@example.com'`）へ変更します。
-3. SQL Editorで `setup.sql` 全体を実行します。指定ユーザーが見つからなければ、全体を取り消します。
-
-初期権限の設定が不要な既存環境では `NULL` のまま実行できます。先頭登録ユーザーへの自動権限付与は行いません。
-再実行で既存の部長・サイト管理者を置き換えることもありません。
-既存の基盤テーブルとプロフィール・役職・バンドRPCは保持し、不足する定義だけを作成します。
-本番DBのダンプから復元するものではなく、リポジトリの画面・既存SQLの契約に基づく構築SQLです。
-独自に変更された既存スキーマやRPCの内容を、別環境へ複製するものではありません。
-
-Supabase標準の `auth`・`storage` スキーマとロールはSupabaseが用意するものを使用します。
-Authプロバイダー・メール確認・SMTP・リダイレクトURL・APIキーなど、DB外のプロジェクト設定は
-Supabase Dashboardで別途設定します。ユーザー・部員・採点・画像ファイルなどの実データも移行対象には含みません。
-`tests/fixtures/*.sql` はSupabaseの標準部分や旧環境を模したローカルテスト専用で、本番では実行しません。
-
-認証連携と画像権限の参考：[Supabaseのプロフィール作成トリガー](https://supabase.com/docs/guides/auth/managing-user-data)、
-[Storageアクセス制御](https://supabase.com/docs/guides/storage/security/access-control)。
-
-## 検証
-
-Node.jsを利用します。開発用依存は本番サイトでは不要です。
+## ローカルでの検証
 
 ```sh
 npm install
 npm test
+npm run test:browser
+npm run build
 ```
 
-DBテストはPGliteのメモリ内PostgreSQLで実行し、本番Supabaseへ接続しません。
-差分SQLの適用・再適用、権限、取消、学年の境界日、作成失敗時のロールバック、
-採点の復元、合格枠、再集計時の合否保持、公開時の検証を確認します。
-画面側はSupabaseとDOMを模したテストで、公開画像URL、失敗時の画像削除、
-通信失敗後の画像保護、役職欄、採点フォームを確認します。
+ブラウザテストには Chrome または Edge を使います。自動検出できない環境では `KEION_BROWSER` に実行ファイルのパスを設定します。Windows PowerShell で npm のスクリプト実行が制限される場合は `npm.cmd` を使えます。
 
-実際のSupabase Auth・Storageやブラウザ表示の確認は、DB適用後に別途行ってください。
+DB テストは PGlite、ブラウザテストはモックを使用します。ブラウザテストのスクリーンショットは `.tmp/browser-smoke/` に出力されます。ビルドは生成物の `dist/` を作り直します。
 
-## 未実装の機能
-
-減点登録、バンド作成後の編集、
-オーディション作成後の編集、パスワード再設定は今回追加していません。
-採点はログインユーザーが行う方式です。OD参加登録はOD詳細から行えます。
-採点終了と合否決定は部長の手動操作です。
-
-## ODタイムテーブル
-
-係の割り当ては、最新の変更により**バンド単位**です。先頭・最後・休憩直後を含む各バンドの行に、
-ローディー2名とタイムキーパー2名を表示します。転換・休憩の行には係を配置しません。
-自分の演奏中と前後の通常転換に重ならないよう、自分のバンドと、通常転換で隣接するバンドを自動割り当てから除外します。
-旧形式の公開版・過去ODはそのまま表示・出力できます。旧形式の下書きは開いた時に、直前の転換の係を次のバンドへ引き継ぎます。
-先頭バンドは空欄になるため、確認・手動修正または係の全再生成を行って保存・再公開してください。
-DB更新には統合済みの `setup.sql` を実行してください。既存の公開版や下書きはSQL適用だけでは変更しません。
-
-`timetable.md` の仕様に沿って、下書き・公開版、時間の連動計算、休憩、係の自動割り当てと手動例外、
-参加取消、サイト内通知、PDF・PNG・Excel（.xlsx）出力を実装しています。
-
-導入時は **`setup.sql`** をSupabase SQL Editorで実行し、
-HTML・CSS・JavaScriptを一緒に配信してください。この作業では本番DBへの適用・サイトの配信は行っていません。
-SQLはトランザクション内で実行され、再適用できます。
-
-既存の `profiles`、`circle_president`、`audition_participants`、`audition_entries`、`audition_entry_members` と、
-`circle_members_admin()`（`user_id`, `role_ids`）、`circle_roles_list()`（`id`, `name`, `exclude_from_staff_auto_assign`）、
-`audition_member_year()` を参照します。新規環境では、これらの前提定義も `setup.sql` が作成します。
-既存環境のプロフィール・役職RPCは保持します。新設テーブルは直接アクセスを禁止し、部長を確認するRPC経由で更新します。
-
-操作は次の順です。
-
-1. OD詳細で参加登録・出演可能時間帯の申告を行います。時間帯は `10:00-12:00` の形式で1行ずつ入力します。空欄は制限なしです。
-2. エントリー締切後、部長がOD詳細で全エントリーの演奏順を確定します。タイムテーブル生成後は順序を変更できません。
-3. ホームの「ODタイムテーブル」でODと開催日を選び、生成します。開催日は日本時間で判定します。
-4. 時間・休憩・係を調整し、下書きを保存します。警告や手動例外は確認ダイアログで確認します。
-5. 公開・再公開すると、公開イベントとユーザー別の通知を同じトランザクションで保存します。
-   ホームのお知らせに本人の出演・係・集合時刻の変更前後を表示します。通知対象は在籍者と、新旧公開版の出演者・担当者です。
-
-開催日が日本時間の本日より前になると過去ODとして公開版の閲覧・出力のみ可能です。
-過去ODの公開版がある場合も、部長またはサイト管理者は確認後にオーディションを削除できます。
-削除すると下書き・公開タイムテーブル・公開履歴・関連通知もまとめて削除されます。
-過去ODのタイムテーブルを編集できない制限は維持します。
-初回公開までは本人が参加を取り消せ、公開後は部長だけが取り消せます。
-取消時は下書きの係を空欄にし、公開版は再公開まで保持します。
-役職の対象外設定はタイムテーブル画面の設定欄で変更できます。部長本人は常に自動割り当て対象外です。
-
-出力は外部ライブラリや外部送信を使わずブラウザ内で作成します。PDFは日本語を画像として埋め込み、ページごとに見出しを繰り返します。
-Excelは文字列セルを使ったOOXML形式です。出力対象は現在表示中の下書きまたは公開版です。
-
-`npm test` は既存の回帰テストに加え、時刻計算・割り当て制約・画面操作・出力構造・DB認可・公開版保持・通知・参加取消・過去ODを検証します。
-DBテストでは本番データに接続せず、新規環境の構築・再実行と既存プロフィール・役職RPCとの互換性を検証しています。
-実際のSupabaseプロジェクトへのSQL適用と、実ブラウザ・Excelでの表示確認は別途必要です。
-
-## UI仕様への対応（2026-11-04 再開分）
-
-`club_webapp_UI_spec_Q1-Q74.md` を基準に、共通サイドバー、ホームの次回予定・締切、
-お知らせの投稿・編集・削除、通知ベル、MYスケジュールのセル単位自動保存を実装しています。
-MYスケジュールの「再保存」の下にある「入力した日程をすべて削除」は、確認後に本人の全期間の入力を削除します。
-未保存の変更がある場合は再保存してから削除してください。利用には更新した `setup.sql` の適用が必要です。
-PCはサイドバーを常時表示、スマートフォンはボタン・スワイプ・背景タップで開閉します。
-お知らせは部長・サイト管理者のみ編集でき、サイト管理者に部長権限は追加しません。
-
-導入時は **`setup.sql`** をSupabase SQL Editorで適用し、
-`autosave.js`・`ui.js` を含めてHTML・CSS・JavaScriptを配信してください。
-既存の `profile_context()` の `is_site_admin` を権限判定に使用します。
-この差分は本番DBへの適用・サイト配信を実行しません。
-
-MYスケジュールは入力を即座に表示し、セルごとに書き込みを直列化します。
-保存失敗時は入力を保持し、最大3回の自動再試行、通信回復時の再試行、手動の「再保存」に対応します。
-失敗したセルを赤枠、保存中のセルを下線で示し、未保存のまま期間を変えたり画面を開き直したりしても入力を失いません。
-未保存のままブラウザを閉じる・再読み込みする場合は離脱警告を表示します。
-端末への永続的なオフライン保存は行いません。
-
-新規のお知らせは固定IDで再送するため、通信応答が失われた場合も再保存で重複作成しません。
-通知ベルには受付開始・結果公開と、既存タイムテーブル公開通知を集約し、本人の通知だけ既読化します。
-開催日は `auditions.event_date`、未設定時は既存タイムテーブルの開催日を参照します。
-どちらも未設定の場合は「開催日未設定」と表示します。
-
-`npm test` で既存回帰テストとDB認可・自動保存の連打・失敗・ログアウトを検証します。
-`npm run test:browser` はChrome/Edgeをヘッドレス起動し、1280px・375px・320px幅で画面と保存操作を検証します。
-別のブラウザパスを使う場合は `KEION_BROWSER` を指定してください。
-ブラウザテストはSupabaseを模したローカル応答を使い、本番データに接続しません。
-スクリーンショットはGit対象外の `.tmp/browser-smoke/` に出力します。
-
-UI仕様全体の実装は継続中です。BAND画面のモーダル化・メンバー管理、採点の自動保存と最終提出、
-採点比較グラフ・管理表、タイムテーブルの自動保存・差分強調、入学年度変更申請などは、
-この再開分では変更していません。既存のタイムテーブルは下書き保存と公開版の分離を維持します。
+画面の機能要件と実装状況を照合するときは [UI 仕様書](club_webapp_UI_spec_Q1-Q74.md) を参照してください。

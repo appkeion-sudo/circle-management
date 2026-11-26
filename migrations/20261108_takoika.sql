@@ -1,4 +1,4 @@
--- Additive game migration. Apply after the existing user-management migration.
+-- Additive game migration for existing installations.
 BEGIN;
 CREATE TABLE IF NOT EXISTS public.takoika_bests (
  user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -43,21 +43,4 @@ END $$;
 REVOKE ALL ON FUNCTION public.takoika_save_best(integer),public.takoika_ranking() FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.takoika_save_best(integer),public.takoika_ranking() TO authenticated;
 
--- Existing deletion deliberately rejects unknown auth/profile dependencies.
--- Recognize only this reviewed CASCADE FK, preserving the rest of the guard.
-DO $migration$
-DECLARE definition text;
-BEGIN
- IF to_regprocedure('public.admin_user_delete(uuid,uuid,uuid,text)') IS NOT NULL THEN
-  SELECT pg_get_functiondef('public.admin_user_delete(uuid,uuid,uuid,text)'::regprocedure) INTO definition;
-  IF position('''public.takoika_bests.user_id''' in definition)=0 THEN
-   IF position('''public.profiles.id'',''storage.objects.owner''' in definition)=0 THEN
-    RAISE EXCEPTION 'User deletion guard differs from the reviewed version; review before applying';
-   END IF;
-   definition := replace(definition,'''public.profiles.id'',''storage.objects.owner''',
-    '''public.takoika_bests.user_id'',''public.profiles.id'',''storage.objects.owner''');
-   EXECUTE definition;
-  END IF;
- END IF;
-END $migration$;
 COMMIT;

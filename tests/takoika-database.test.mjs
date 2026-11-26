@@ -12,10 +12,9 @@ test('takoika migration: best-only writes, ranking privacy, RLS and account dele
  const user=async n=>{await db.exec('RESET ROLE');await q("SELECT set_config('request.jwt.claim.sub',$1,false)",[n?id(n):'']);await db.exec('SET ROLE authenticated');};
  try{
   await db.exec(await read('tests/fixtures/supabase-platform.sql'));
-  await db.exec('CREATE ROLE service_role; GRANT USAGE ON SCHEMA public TO service_role');
-  // Exercise an existing deployment's old deletion guard as well as fresh setup.
+  // Apply the game migration to a database that predates the game.
   const oldSetup=(await read('setup.sql')).split('-- タコイカゲーム')[0]+'COMMIT;';
-  await db.exec(oldSetup.replace("'public.takoika_bests.user_id',",''));
+  await db.exec(oldSetup);
   await db.exec(await read('migrations/20261108_takoika.sql'));
   await db.exec(await read('migrations/20261108_takoika.sql'));
   for(let n=1;n<=5;n++) await q('INSERT INTO auth.users(id,email,raw_user_meta_data) VALUES($1,$2,$3)',[id(n),`u${n}@example.test`,JSON.stringify({username:'部員'+n})]);
@@ -62,10 +61,9 @@ test('takoika migration: best-only writes, ranking privacy, RLS and account dele
    await q("INSERT INTO takoika_bests(user_id,best_score) SELECT id,1 FROM auth.users WHERE email LIKE 'many%'");
    await user(1);assert.equal((await scalar('SELECT takoika_ranking()')).length,1009);
   });
-  await t.test('admin deletion recognizes game FK and cascades only target best',async()=>{
-   await db.exec('RESET ROLE');await q('INSERT INTO site_admins VALUES($1)',[id(5)]);
-   await db.exec('SET ROLE service_role');
-   await q('SELECT admin_user_delete($1,$2,$3,$4)',[id(5),id(2),id(900),'削除']);
+  await t.test('manual Auth deletion cascades only the target best',async()=>{
+   await db.exec('RESET ROLE');
+   await q('DELETE FROM auth.users WHERE id=$1',[id(2)]);
    await user(1);const ranking=await scalar('SELECT takoika_ranking()');
    assert.equal(ranking.some(r=>r.user_id===id(2)),false);
    assert.equal(ranking.find(r=>r.user_id===id(1)).best_score,12);

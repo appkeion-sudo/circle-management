@@ -75,7 +75,6 @@ const PAGE_IDS = [
   "band-detail-section",
   "profile-section",
   "admin-section",
-  "user-management-section",
   "audition-section",
   "audition-create-section",
   "audition-detail-section",
