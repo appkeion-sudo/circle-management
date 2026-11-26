@@ -19,8 +19,12 @@ const CircleUI = (() => {
   document.addEventListener('touchend',e=>{if(!touch)return;const dx=e.changedTouches[0].clientX-touch.x,dy=e.changedTouches[0].clientY-touch.y;if(Math.abs(dx)>70&&Math.abs(dy)<60){if(touch.x<28&&dx>0)drawer(true);if(dx<0)drawer(false);}touch=null;},{passive:true});
   function settings() {
     const box=el('div');
-    box.append(button('メンバー・役職管理',()=>$('open-admin-button').click()),button('ログアウト',()=>$('logout-button').click()),button('タコイカゲーム',()=>{dialog.close();showPage('takoika-section');}));
-    box.firstChild.hidden=!isAdmin(currentProfileContext);
+    const manageMembers=button('メンバー・役職管理',()=>{
+      dialog.close();
+      $('open-admin-button').click();
+    });
+    manageMembers.hidden=!isAdmin(currentProfileContext);
+    box.append(manageMembers,button('ログアウト',()=>$('logout-button').click()),button('タコイカゲーム',()=>{dialog.close();showPage('takoika-section');}));
     const dialog=modal('設定',box);
   }
   const links=[['ホーム',[['⌂ ホーム',()=>showPage('home-section')]]],['スケジュール',[['◷ MY','open-schedule-button'],['♫ BAND','open-band-button']]],['イベント',[['★ オーディション','open-audition-button'],['▦ タイムテーブル','open-timetable-button']]],['アカウント',[['☺ プロフィール','open-profile-button'],['⚙ 設定',settings]]]];

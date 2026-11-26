@@ -37,6 +37,7 @@ window.supabase={createClient:()=>({auth:{
  if(name==='takoika_ranking')return mock.rankFails?{error:{message:'取得失敗'}}:{data:mock.best?[{user_id:mock.user.id,username:'テストメンバー',best_score:mock.best,rank:1}]:[]};
  if(name==='takoika_save_best'){mock.gameWrites.push(args);if(mock.gameFails)return {error:{message:'保存失敗'}};mock.best=Math.max(mock.best,args.p_score);return {data:mock.best};}
  if(name==='profile_context')return {data:{profile:{username:'テストメンバー'},is_president:true,is_site_admin:mock.siteAdmin}};
+ if(['circle_members_admin','circle_roles_list','pending_year_requests'].includes(name))return {data:[]};
  if(name==='ui_dashboard')return {data:{events:[{title:'秋のOD',event_date:'2099-11-04',entry_deadline:'2099-11-01T10:00:00Z'}],notices:[{id:'notice',title:'お知らせ',body:'本文',created_at:'2026-11-04T00:00:00Z'}],can_post:true,unread:1}};
  if(name==='od_timetable_inbox')return {data:[]};
  if(name==='ui_notifications')return {data:[{id:'n',title:'受付開始',body:'エントリーできます',read_at:null}]};
@@ -104,6 +105,9 @@ try{
   assert.equal(await evaluate(`mock.writes.at(-1).p_available`),true);
   const screenshot=await command('Page.captureScreenshot',{format:'png'});
   await writeFile(resolve(artifacts,`schedule-${width}.png`),Buffer.from(screenshot.data,'base64'));
+  await evaluate(`Array.from(document.querySelectorAll('#sidebar button')).find(b=>b.textContent.includes('設定')).click()`);
+  await evaluate(`Array.from(document.querySelectorAll('dialog[open] button')).find(b=>b.textContent==='メンバー・役職管理').click()`);
+  assert.equal(await evaluate(`!document.getElementById('admin-section').hidden && !document.querySelector('dialog[open]')`),true,'member management opens and closes settings');
   // Game: actual settings entry, real sprites, locked input, saved best and retries.
   await evaluate(`Array.from(document.querySelectorAll('#sidebar button')).find(b=>b.textContent.includes('設定')).click()`);
   await waitFor(`document.querySelector('dialog[open]')`);
