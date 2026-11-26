@@ -24,7 +24,7 @@
 1. 本番の外部キー・トリガー・RLSとバックアップを確認してください。既存環境では、レビュー後に **`migrations/20261108_user_management.sql`** をSupabase SQL Editorで実行します。新規構築では同じ定義を統合した `setup.sql` を使います。マイグレーションを実行するだけではユーザを削除しませんが、関数更新・テーブル追加・お知らせの作成者のNULL許容変更を含みます。既存環境で他の変更まで再適用しないよう、今回は専用マイグレーションを使ってください。
 2. 関数の所有者はSupabaseの `postgres` など必要なテーブル更新権限を持つDB管理者にします。`service_role` のみに一覧・削除RPCの実行権限を付与します。`anon`・`authenticated` は実行できません。PostgRESTの公開スキーマに従来どおり `public` が必要です。
 3. Cloudflare Workersに `wrangler.jsonc` を適用し、`SUPABASE_URL`・`SUPABASE_PUBLISHABLE_KEY` がフロントの `app.js` と同じプロジェクトを指すことを確認します。Worker名は実際の公開環境に合わせてください。
-4. Workerの暗号化シークレットに **`SUPABASE_SERVICE_ROLE_KEY`** を登録します。値は対象Supabaseプロジェクトのサーバ専用service_roleキーです。Cloudflareダッシュボードか `npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY` で入力し、Git・HTML・公開環境変数・ログへ含めないでください。ローカルではGit除外済みの `.dev.vars` に設定できます。
+4. Workerの暗号化シークレットに **`SUPABASE_SERVICE_ROLE_KEY`** を登録します。値には対象Supabaseプロジェクトのサーバ専用シークレットキー（`sb_secret_` で始まるもの）または従来の `service_role` JWTを使えます。Cloudflareダッシュボードか `npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY` で入力し、Git・HTML・公開環境変数・ログへ含めないでください。ローカルではGit除外済みの `.dev.vars` に設定できます。
 5. `npm run build` で `dist/` に公開ファイルだけをコピーします。Windows PowerShellでnpmの実行ポリシーに制限がある場合は `npm.cmd run build` を使います。Workersのビルドコマンドも環境に応じて調整できます。**リポジトリのルート全体は公開しないでください。** `dist/` にSQL・テスト・Workerソース・秘密情報は入りません。
 6. SQL適用後にWorkerと静的アセットを一緒に配置します（例：`npx wrangler deploy`）。静的ファイルだけのPages配信では削除APIは動きません。`ASSETS` バインディングと `/api/*` のWorker優先実行が必要です。APIは同じオリジンで利用します。
 
@@ -38,6 +38,15 @@ WHERE c.contype = 'f'
   AND c.confrelid IN ('auth.users'::regclass, 'public.profiles'::regclass)
 ORDER BY c.conrelid::regclass::text, c.conname;
 ```
+
+ユーザ管理を開いたときに Worker のログに `PGRST202` が出る場合は、Worker の `SUPABASE_URL` が指すプロジェクトの SQL Editor で関数の有無を確認します。
+
+```sql
+SELECT to_regprocedure('public.admin_users_list(uuid,text,integer)') AS list_rpc,
+       to_regprocedure('public.admin_user_delete(uuid,uuid,uuid,text)') AS delete_rpc;
+```
+
+どちらかが `NULL` なら、導入手順に従って `migrations/20261108_user_management.sql` を適用します。両方が存在する場合は `NOTIFY pgrst, 'reload schema';` を実行して一覧を開き直します。それでも `PGRST202` が続く場合は、Data API の公開スキーマに `public` が含まれ、一覧関数の引数名が `p_actor`、`p_search`、`p_offset` になっていることを確認します。
 
 ### 削除処理と失敗時の扱い
 

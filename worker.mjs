@@ -30,7 +30,10 @@ export default {
       const identity = await upstream('/auth/v1/user', {headers:{apikey:env.SUPABASE_PUBLISHABLE_KEY, Authorization:authorization}});
       if (!identity.response.ok || !uuid.test(identity.data?.id)) throw new ApiError(401, 'ログインし直してください。');
       const actor = identity.data.id;
-      const headers = {apikey:env.SUPABASE_SERVICE_ROLE_KEY, Authorization:`Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`, 'Content-Type':'application/json'};
+      const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY;
+      const headers = {apikey:serviceKey, 'Content-Type':'application/json', 'Content-Profile':'public'};
+      // Legacy service_role keys are JWTs. Modern secret keys use apikey alone.
+      if (!serviceKey.startsWith('sb_secret_')) headers.Authorization = `Bearer ${serviceKey}`;
       let name, args;
       if (listing) {
         const search = url.searchParams.get('q') || '';
@@ -50,7 +53,8 @@ export default {
       const result = await upstream('/rest/v1/rpc/' + name, {method:'POST', headers, body:JSON.stringify(args)});
       if (!result.response.ok) {
         const code = result.data?.code;
-        console.error(JSON.stringify({event:'user_admin_failure', requestId, actor, target:target?.[1], operationId:args.p_operation, code, status:result.response.status}));
+        console.error(JSON.stringify({event:'user_admin_failure', requestId, actor, target:target?.[1], operation:name, operationId:args.p_operation, code, status:result.response.status}));
+        if (code === 'PGRST202') throw new ApiError(503, 'ユーザ管理を利用できません。管理者はデータベース設定を確認してください。');
         const safe = {KA403:'サイト管理者のみ操作できます。', KA400:'自分自身は削除できません。', KA409:'最後のサイト管理者は削除できません。', KA404:'対象ユーザが見つかりません。', KA422:'削除確認または操作IDが不正です。', KA412:'未確認のユーザ依存関係があります。管理者がDB構造を確認するまで削除できません。'};
         throw new ApiError(code === 'KA403' ? 403 : code === 'KA404' ? 404 : 409, safe[code] || '処理に失敗しました。状態を再確認してから再試行してください。');
       }

@@ -23,9 +23,20 @@ test('Worker verifies Auth, binds actor server-side and confines privileged RPC 
    assert.equal(response.status,200);assert.equal(calls.length,2);
    assert.equal(calls[0].options.headers.Authorization,'Bearer verified-token');
    assert.equal(calls[1].options.headers.apikey,'server-secret');
+   assert.equal(calls[1].options.headers.Authorization,'Bearer server-secret');
+   assert.equal(calls[1].options.headers['Content-Profile'],'public');
    assert.deepEqual(JSON.parse(calls[1].options.body),{p_actor:actor,p_search:"%' OR true",p_offset:100});
    assert.equal(response.headers.get('Cache-Control'),'no-store');
    assert.doesNotMatch(await response.text(),/server-secret/);
+  });
+  await t.test('modern server key authenticates the RPC via apikey without a bearer header',async()=>{
+   calls.length=0;
+   const serverKey='sb_secret_test';
+   const response=await worker.fetch(request(),{...env,SUPABASE_SERVICE_ROLE_KEY:serverKey});
+   assert.equal(response.status,200);
+   assert.equal(calls[0].options.headers.Authorization,'Bearer verified-token');
+   assert.equal(calls[1].options.headers.apikey,serverKey);
+   assert.equal(calls[1].options.headers.Authorization,undefined);
   });
   await t.test('no token, invalid token, cross origin, invalid ID and confirmation never call deletion RPC',async()=>{
    calls.length=0;
@@ -52,6 +63,19 @@ test('Worker verifies Auth, binds actor server-side and confines privileged RPC 
    const accepted=await worker.fetch(request('/'+target,'DELETE',body),env);
    assert.equal(accepted.status,200);assert.equal((await accepted.json()).data.replayed,true);
    assert.ok(calls.at(-1).url.endsWith('/rpc/admin_user_delete'));
+  });
+  await t.test('missing RPC reports a database setup error and keeps upstream details in the server',async()=>{
+   rpcStatus=404;rpcData={code:'PGRST202',message:'raw private error'};
+   const response=await worker.fetch(request(),env);
+   const body=await response.json();
+   assert.equal(response.status,503);
+   assert.match(body.error,/データベース設定/);
+   assert.doesNotMatch(body.error,/raw private error/);
+   assert.ok(body.requestId);
+   const log=JSON.parse(logs.at(-1));
+   assert.equal(log.requestId,body.requestId);
+   assert.equal(log.operation,'admin_users_list');
+   assert.equal(log.code,'PGRST202');
   });
   await t.test('network uncertainty is reported and no second destructive request is attempted',async()=>{
    calls.length=0;timeout=true;

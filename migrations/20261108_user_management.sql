@@ -226,4 +226,5 @@ BEGIN
    invalid_votes=EXCLUDED.invalid_votes,
    calculated_at=EXCLUDED.calculated_at;
 END $function$;
+NOTIFY pgrst, 'reload schema';
 COMMIT;

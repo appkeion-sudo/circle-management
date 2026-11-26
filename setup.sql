@@ -2009,4 +2009,5 @@ END $$;
 REVOKE ALL ON FUNCTION public.takoika_save_best(integer),public.takoika_ranking() FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.takoika_save_best(integer),public.takoika_ranking() TO authenticated;
 
+NOTIFY pgrst, 'reload schema';
 COMMIT;
