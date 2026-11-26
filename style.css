@@ -765,6 +765,9 @@ body.signed-in main { margin: 24px 24px 0 260px; width: calc(100% - 284px); max-
 .dashboard-top article h3, #home-section > article h3 { margin-top: 0; }
 .circle-modal { width: min(94vw,640px); max-height: 88dvh; overflow: auto; border: 1px solid #ddd1f3; border-radius: 18px; padding: 22px; color: #202936; }
 .circle-modal::backdrop { background: #231b3d88; }
+.band-member-dialog { overflow-wrap: anywhere; }
+.band-member-dialog .member-list { max-height: 36dvh; overflow: auto; }
+.band-member-dialog .member-option { min-height: 44px; }
 .circle-modal textarea { display: block; width: 100%; min-height: 150px; resize: vertical; border: 1px solid #cad2d8; border-radius: 8px; padding: 12px; font: inherit; }
 .notice-body { white-space: pre-wrap; overflow-wrap: anywhere; }
 #schedule-table .slot-button[data-save-state="error"] { outline: 2px solid #c53b55; outline-offset: -2px; }

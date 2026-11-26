@@ -8,7 +8,60 @@
 - アプリ内の部長交代は、現部長がプロフィールから申請し、後任が承認します。現部長が操作できない場合はサイト管理者が「部長を再設定」を使えます。サイト管理者の交代時は、先に後任へ権限を付与し、操作できることを確認してから旧担当者の権限を解除します。
 - 退会者などのアカウントは、Supabase の SQL Editor で UID を確認して手動削除します。関連データの調べ方、バンドを残す SQL、削除後の確認方法は [ユーザ手動削除手順](#supabase-でのユーザ手動削除) にあります。部長や採点者を削除する場合は、引き継ぎや採点履歴の扱いを先に確認します。
 
+## 認証メールの SMTP 設定と引き継ぎ
+
+Supabase Auth のカスタム SMTP に、サークル管理者用 Google アカウントの Gmail を使用しています。新規登録時の認証メールやパスワード再設定メールなどを送信します。独自ドメインの取得は不要で、無料の Gmail アカウントで運用できます。
+
+### SMTP 設定
+
+Supabase Dashboard の **Authentication → Emails → SMTP Settings** を開きます。下表は引き継ぎ時の設定内容です。実際の設定値は対象プロジェクトの Dashboard で確認してください。
+
+| 設定項目 | 設定内容 |
+| --- | --- |
+| Enable Custom SMTP | ON |
+| Sender email address | 管理者用 Gmail アドレス |
+| Sender name | 軽音サークル管理サイト |
+| Host | `smtp.gmail.com` |
+| Port number | `587`（STARTTLS） |
+| Minimum interval per user | 60 秒（推奨） |
+| Username | 管理者用 Gmail アドレス |
+| Password | Google が発行したアプリパスワード |
+
+### 送信上限
+
+- Supabase の標準 SMTP はプロジェクト全体で 2 通／時間です。カスタム SMTP の初期上限は 30 通／時間で、Supabase 側で変更できます。このアプリでは 60 通／時間を推奨します。現在値は Dashboard で確認してください。 [Supabase のカスタム SMTP](https://supabase.com/docs/guides/auth/auth-smtp)
+- Gmail の無料アカウントは 500 通／日が目安です。不正利用防止などで、より少ない送信数でも制限される場合があります。Supabase と Gmail 両方の制限が適用されます。Gmail は日常のメール向けで、送信数や配信の安定性は保証されません。 [Gmail の送信制限](https://support.google.com/mail/answer/22839?hl=ja)
+
+送信上限を変更する場合は、Supabase Dashboard の **Authentication → Rate Limits → Rate limit for sending emails** を開き、上限を入力して保存します。
+
+### Google アカウントの 2 段階認証
+
+SMTP 用のアプリパスワードを発行するため、管理者用 Google アカウントで 2 段階認証を有効にしています。ログイン時に、管理者のスマートフォン上の Authenticator の認証コードが必要になることがあります。
+
+- 管理者交代時は Authenticator の認証情報を引き継ぎます。機種変更時も旧端末から新端末へ移行します。アプリの種類とバージョンに対応する移行機能を使用してください。
+- 認証情報の移行が完了するまで、旧端末の初期化や Authenticator の削除は行わないでください。新端末で Google アカウントにログインできることを確認してから、旧端末に残る認証情報を削除します。
+- 管理者交代時は、旧管理者が継続してログインできないよう、Google アカウントのセキュリティ設定、登録済み端末、復旧用メールアドレスや電話番号などを確認します。
+- 認証用 QR コード、認証シークレット、バックアップコードは GitHub やドキュメントに掲載しないでください。
+
+### アプリパスワード
+
+- SMTP 接続には Google が発行するアプリパスワードを使います。Google アカウントの通常のパスワードを変更すると、既存のアプリパスワードが無効になります。 [Google アプリパスワードのヘルプ](https://support.google.com/accounts/answer/185833?hl=ja)
+- 無効化や管理者交代に伴って再発行した場合は、Supabase の SMTP 設定を更新します。設定変更後は新規登録時の認証メールとパスワード再設定メールが届くことを確認します。
+- Google アカウントのパスワードやアプリパスワードは、ソースコード、GitHub、ドキュメントに保存しないでください。
+
+関連ページ [Google アカウントのセキュリティ設定](https://myaccount.google.com/security) · [Google アプリパスワード発行](https://myaccount.google.com/apppasswords) · [Supabase Dashboard](https://supabase.com/dashboard/projects) · [Supabase カスタム SMTP 公式ドキュメント](https://supabase.com/docs/guides/auth/auth-smtp)
+
+## BAND スケジュールのメンバー管理
+
+- BAND 一覧には「メンバーを追加」「メンバーを削除」「バンド脱退」の順で表示します。バンドの所属メンバーなら、作成者や役職にかかわらず操作できます。
+- 追加・削除とも、バンドを選んでから名前で検索し、複数人を選べます。バンド選択に戻ると選択内容がリセットされます。加入は決定時に完了し、削除時はバンド名と対象者を確認して確定します。自分が抜ける場合は「バンド脱退」を使います。
+- 変更対象は選択したバンドの所属情報です。追加・削除されたユーザが BAND 一覧を開くと所属が反映され、バンド詳細の予定集計は現在のメンバー構成を使用します。MY スケジュールの入力は保持されます。
+- オーディションの新規エントリーでは現在のメンバー構成を使い、重複判定では他バンドの応募時のメンバーと照合します。既存エントリーの一年生区分、採点可否、感想閲覧、タイムテーブルの係候補は応募時の情報に従います。出演可能時間の閲覧・申告など、現在の所属を確認する操作には新しい構成が反映されます。過去の結果と公開済みタイムテーブルは保持されます。
+- 応募後の入れ替えを当該オーディションの出演・採点資格にも反映すべきかは未決定です。現行 RPC で同じバンドが再応募すると応募時のメンバーは更新されますが、一年生区分は初回の値が残ります。出演者変更を認める場合は、受付期間中に一年生区分と重複条件を再判定して一緒に保存し、締切後は確定した構成を固定する方法を検討してください。
+
 ## 既存環境への反映
+
+今回の BAND メンバー管理を配信する前に、対象 Supabase プロジェクトへ [メンバー管理マイグレーション](migrations/20261126_manage_band_members.sql) を適用します。適用済みの場合は Cloudflare Pages のデプロイに進みます。未適用の場合は SQL Editor にファイル全体を貼り付けて実行します。
 
 1. Supabase の SQL Editor で [旧ユーザ管理 RPC の廃止 SQL](migrations/20261126_remove_user_management.sql) を実行します。この移行はアプリから使っていた一覧・削除用の DB 関数を削除します。既存の監査記録と匿名化済みの採点は、過去の確認と OD の再集計に使えるよう保持します。
 2. Cloudflare Pages で静的サイトをデプロイします。Git 連携の場合はフレームワークを `None`、ビルドコマンドを `npm run build`、出力ディレクトリを `dist` に設定します。直接アップロード方式の場合は、ローカルでビルドした `dist/` をアップロードします。 [Cloudflare Pages のビルド設定](https://developers.cloudflare.com/pages/configuration/build-configuration/) · [直接アップロード](https://developers.cloudflare.com/pages/get-started/direct-upload/)
@@ -21,6 +74,7 @@
 
 1. Supabase Dashboard で Auth のメール確認、SMTP、公開サイトのリダイレクト URL を設定し、初期部長・サイト管理者の Auth ユーザを作成します。同じユーザを指定できます。
 2. [setup.sql](setup.sql) の `initial_president_email` と `initial_site_admin_email` に対象のメールアドレスを設定し、ファイル全体を SQL Editor で実行します。プロフィールの自動作成、RLS、アプリ用の RPC、画像用の `band-icons` バケットを構築します。バンド画像は JPEG・PNG・WebP で上限は 2 MiB です。
+   続けて [メンバー管理マイグレーション](migrations/20261126_manage_band_members.sql) を実行します。
 3. [app.js](app.js) 冒頭の `SUPABASE_URL` と `SUPABASE_KEY` を変更します。ブラウザに設定するキーは publishable キーまたは旧 anon キーです。サービスロールキーやパスワードはソースへ置かないでください。
 4. `npm run build` で生成した `dist/` を配信します。ルートディレクトリには SQL やテストがあるため、公開範囲は `dist/` にします。
 

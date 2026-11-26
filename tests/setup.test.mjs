@@ -95,6 +95,58 @@ test('setup.sql builds a fresh Supabase application without application fixtures
    assert.equal(people.length,4);
    assert.equal(people.find(p=>p.id===id(3)).registered,true);
   });
+  await t.test('band membership changes are atomic, restricted to members, and reflected in schedules',async()=>{
+   await owner();
+   const migration=await read('migrations/20261126_manage_band_members.sql');
+   await db.exec(migration);
+   await db.exec(migration);
+   const change=(action,ids,target=band)=>scalar('SELECT change_band_members($1,$2,$3)',[target,ids,action]);
+   const members=async()=> (await q('SELECT user_id FROM band_members WHERE band_id=$1 ORDER BY user_id',[band])).map(row=>row.user_id);
+   const slots=async()=> (await q("SELECT user_id FROM get_band_schedules($1,'2099-01-01','2099-01-01') ORDER BY user_id",[band])).map(row=>row.user_id);
+   await user(1);
+   const other=await scalar("SELECT create_band('別バンド',NULL,ARRAY[$1]::uuid[])",[id(2)]);
+   for (const n of [1,2,4]) {
+    await user(n);
+    await q("SELECT ui_schedule_save('2099-01-01',1,true)");
+   }
+   await assert.rejects(change('add',[id(1)]),/所属していません/);
+   await assert.rejects(change('remove',[id(3)]),/所属していません/);
+   await user(3);
+   await assert.rejects(change('add',[id(1)],id(999)),/見つからない/);
+   await assert.rejects(change('add',[id(1),id(999)]),/追加できない/);
+   assert.deepEqual(await members(),[id(3)]);
+   assert.equal(await change('add',[id(4),id(4)]),1);
+   await assert.rejects(change('add',[id(4),id(1)]),/すでに所属/);
+   assert.deepEqual(await members(),[id(3),id(4)]);
+   await assert.rejects(q('INSERT INTO band_members(band_id,user_id) VALUES($1,$2)',[band,id(1)]),/permission denied|row-level security/);
+   assert.deepEqual(await q('DELETE FROM band_members WHERE band_id=$1 AND user_id=$2 RETURNING user_id',[band,id(4)]),[]);
+   await user(4);
+   assert.equal(await change('add',[id(1),id(2)]),2);
+   assert.deepEqual(await slots(),[1,2,3,4].map(id));
+   await user(2);
+   assert.equal((await q('SELECT id FROM bands WHERE id=$1',[band])).length,1);
+   await user(4);
+   await assert.rejects(change('remove',[id(4),id(1)]),/バンド脱退/);
+   await assert.rejects(change('remove',[id(1),id(999)]),/所属していない/);
+   assert.deepEqual(await members(),[1,2,3,4].map(id));
+   assert.equal(await change('remove',[id(1),id(2)]),2);
+   assert.deepEqual(await slots(),[id(3),id(4)]);
+   await user(3);
+   assert.equal(await change('remove',[id(4)]),1);
+   assert.deepEqual(await members(),[id(3)]);
+   await user(2);
+   assert.deepEqual((await q('SELECT id FROM bands')).map(row=>row.id),[other]);
+   assert.equal(await scalar("SELECT available FROM schedules WHERE schedule_date='2099-01-01' AND slot=1"),true);
+   await assert.rejects(q("SELECT * FROM get_band_schedules($1,'2099-01-01','2099-01-01')",[band]),/所属/);
+   await user();
+   await assert.rejects(change('add',[id(4)]),/ログイン/);
+   await db.exec('SET ROLE anon');
+   await assert.rejects(change('remove',[id(3)]),/permission denied/);
+   await owner();
+   assert.equal(await scalar('SELECT count(*)::int FROM auth.users'),4);
+   assert.deepEqual(await q('SELECT user_id FROM audition_entry_members WHERE user_id=$1',[id(3)]),[{user_id:id(3)}]);
+   await q('DELETE FROM bands WHERE id=$1',[other]);
+  });
   await t.test('handover requires recipient consent; reapplying preserves data, RPCs and privileges',async()=>{
    await user(1);await q('SELECT propose_president($1)',[id(3)]);
    await user(3);const transfer=(await scalar('SELECT profile_context()')).incoming_transfer_id;

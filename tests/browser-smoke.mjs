@@ -15,6 +15,10 @@ assert.ok(executable,'Set KEION_BROWSER to a Chrome/Edge executable.');
 const artifacts=resolve(root,'.tmp/browser-smoke');await mkdir(artifacts,{recursive:true});
 const mock=`
 window.mock={offline:false,writes:[],user:{id:'00000000-0000-0000-0000-000000000001',email:'member@example.test'},listeners:[],best:0,gameWrites:[],rankFails:false,gameFails:false};
+const bandUsers=[{id:mock.user.id,username:'テストメンバー'},{id:'a',username:'Alpha'},{id:'b',username:'Beta'}];
+const bands=[{id:'band1',name:'検証バンド'},{id:'band2',name:'別のバンド'}];
+mock.memberships={band1:[mock.user.id],band2:[mock.user.id,'a','b']};
+mock.bandWrites=[];
 window.supabase={createClient:()=>({auth:{
  getUser:async()=>({data:{user:mock.user}}),onAuthStateChange:fn=>{mock.listeners.push(fn);},
  getSession:async()=>({data:{session:{access_token:'mock-token'}}}),
@@ -29,8 +33,29 @@ window.supabase={createClient:()=>({auth:{
  if(name==='ui_notifications')return {data:[{id:'n',title:'受付開始',body:'エントリーできます',read_at:null}]};
  if(name==='ui_notifications_read')return {data:null};
  if(name==='ui_schedule_save'){mock.writes.push(args);return mock.offline?{error:{message:'通信失敗'}}:{data:null};}
+ if(name==='list_circle_users')return {data:bandUsers};
+ if(name==='get_band_schedules')return {data:mock.memberships[args.p_band_id].map(user_id=>({user_id,schedule_date:args.p_start_date,slot:1,available:true}))};
+ if(name==='change_band_members'){
+  mock.bandWrites.push(args);
+  if(mock.bandFails)return {error:{message:'通信失敗'}};
+  const {p_band_id:id,p_member_ids:ids,p_action:action}=args;
+  mock.memberships[id]=action==='add'?[...mock.memberships[id],...ids]:mock.memberships[id].filter(user=>!ids.includes(user));
+  return {data:ids.length};
+ }
  return {error:{message:'Unexpected RPC '+name}};
-},from:()=>{const builder={select(){return this;},eq(){return this;},gte(){return this;},lte(){return this;},then(fn){return Promise.resolve({data:[]}).then(fn);}};return builder;}})};
+},from:table=>{const filters={};const builder={
+ select(){return this;},eq(key,value){filters[key]=value;return this;},
+ in(key,values){filters[key]=values;return this;},order(){return this;},gte(){return this;},lte(){return this;},
+ then(fn){
+  let data=[];
+  if(table==='bands')data=bands.filter(band=>filters.id.includes(band.id));
+  if(table==='band_members'){
+   data=filters.band_id?mock.memberships[filters.band_id].map(user_id=>({user_id}))
+    :bands.filter(band=>mock.memberships[band.id].includes(filters.user_id)).map(band=>({band_id:band.id}));
+  }
+  return Promise.resolve({data}).then(fn);
+ }
+};return builder;}})};
 `;
 const server=createServer(async(req,res)=>{
  try{
@@ -91,6 +116,49 @@ try{
   assert.equal(await evaluate(`mock.writes.at(-1).p_available`),true);
   const screenshot=await command('Page.captureScreenshot',{format:'png'});
   await writeFile(resolve(artifacts,`schedule-${width}.png`),Buffer.from(screenshot.data,'base64'));
+  await evaluate(`document.getElementById('open-band-button').click()`);
+  await waitFor(`document.querySelectorAll('#band-list button').length===2`);
+  await evaluate(`window.bandButton=text=>Array.from(document.querySelectorAll('.band-member-dialog[open] button')).find(b=>b.textContent===text);
+   window.bandInput=value=>Array.from(document.querySelectorAll('.band-member-dialog[open] input')).find(i=>i.value===value);
+   window.bandSearch=value=>{const input=document.querySelector('.band-member-dialog[open] input[type=search]');input.value=value;input.dispatchEvent(new Event('input'));};
+   document.getElementById('open-add-band-members').click()`);
+  await waitFor(`bandButton('検証バンド')`);
+  await evaluate(`bandButton('検証バンド').click()`);
+  await waitFor(`bandInput('a')&&bandInput('b')`);
+  assert.equal(await evaluate(`bandButton('決定').disabled && !bandInput(mock.user.id)`),true);
+  assert.equal(await evaluate(`document.querySelector('.band-member-dialog[open]').getBoundingClientRect().right<=innerWidth`),true);
+  await evaluate(`bandInput('a').click();bandButton('← バンド選択に戻る').click();bandButton('別のバンド').click()`);
+  await waitFor(`document.querySelector('.band-member-dialog[open] [role=status]').textContent.includes('追加できるメンバーはいません')`);
+  await evaluate(`bandButton('← バンド選択に戻る').click();bandButton('検証バンド').click()`);
+  await waitFor(`bandInput('a')`);
+  assert.equal(await evaluate(`bandButton('決定').disabled`),true,'changing bands resets the selection');
+  await evaluate(`bandInput('a').click();bandSearch('beta');bandInput('b').click();bandButton('決定').click();bandButton('決定').click()`);
+  await waitFor(`document.getElementById('band-list-message').textContent.includes('2人追加')`);
+  assert.equal(await evaluate(`mock.bandWrites.length`),1,'batch adds are submitted once');
+  await evaluate(`document.querySelector('#band-list button').click()`);
+  await waitFor(`!document.getElementById('band-schedule-results').hidden`);
+  assert.equal(await evaluate(`document.querySelectorAll('#detail-member-list input').length`),3);
+  await evaluate(`document.getElementById('detail-back-band').click();document.getElementById('open-remove-band-members').click()`);
+  await waitFor(`bandButton('検証バンド')`);
+  await evaluate(`bandButton('検証バンド').click()`);
+  await waitFor(`bandInput('a')&&bandInput('b')`);
+  assert.equal(await evaluate(`!bandInput(mock.user.id)`),true);
+  await evaluate(`bandInput('a').click();bandInput('b').click()`);
+  assert.equal(await evaluate(`bandButton('決定').disabled`),false);
+  await evaluate(`bandButton('決定').click()`);
+  await waitFor(`document.querySelector('.band-member-dialog[open] h2').textContent==='メンバー削除の確認'`);
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.band-member-dialog[open] li'),li=>li.textContent)`),['Alpha','Beta']);
+  assert.equal(await evaluate(`document.querySelector('.band-member-dialog[open] h3').textContent`),'検証バンド');
+  await evaluate(`bandButton('キャンセル').click()`);
+  assert.equal(await evaluate(`mock.bandWrites.length`),1,'cancelled confirmation does not remove members');
+  await evaluate(`mock.bandFails=true;bandButton('決定').click();bandButton('削除').click()`);
+  await waitFor(`document.querySelector('.band-member-dialog[open] [role=status]').textContent.includes('通信失敗')`);
+  await evaluate(`mock.bandFails=false;bandButton('削除').click()`);
+  await waitFor(`document.getElementById('band-list-message').textContent.includes('2人削除')`);
+  await waitFor(`document.querySelector('#band-list button')`);
+  await evaluate(`document.querySelector('#band-list button').click()`);
+  await waitFor(`!document.getElementById('band-schedule-results').hidden`);
+  assert.equal(await evaluate(`document.querySelectorAll('#detail-member-list input').length`),1);
   await evaluate(`Array.from(document.querySelectorAll('#sidebar button')).find(b=>b.textContent.includes('設定')).click()`);
   await evaluate(`Array.from(document.querySelectorAll('dialog[open] button')).find(b=>b.textContent==='メンバー・役職管理').click()`);
   assert.equal(await evaluate(`!document.getElementById('admin-section').hidden && !document.querySelector('dialog[open]')`),true,'member management opens and closes settings');
@@ -141,7 +209,7 @@ try{
   await evaluate(`document.getElementById('logout-button').click()`);
   await waitFor(`document.getElementById('app-header').hidden`);
   assert.equal(await evaluate(`document.querySelectorAll('dialog[open]').length`),0,'logout closes private dialogs');
-  console.log(`PASS browser ${width}px: navigation, dashboard, schedule, takoika (zero, double tap, best, ties, retry, leave), logout`);
+  console.log(`PASS browser ${width}px: navigation, dashboard, schedule, band membership, takoika, logout`);
  }
  assert.deepEqual(errors,[],'no browser runtime errors');
  await send('Browser.close');

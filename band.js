@@ -51,6 +51,16 @@
     return el;
   }
 
+  function memberOption(user, checked = false) {
+    const label = element("label", undefined, "member-option");
+    const checkbox = element("input");
+    checkbox.type = "checkbox";
+    checkbox.value = user.id;
+    checkbox.checked = checked;
+    label.append(checkbox, element("span", user.username));
+    return label;
+  }
+
   async function getUser() {
     const { data, error } = await db.auth.getUser();
     if (error) throw error;
@@ -127,6 +137,13 @@
 
   async function loadUsers() {
     allUsers = normalizeUsers(await rpc("list_circle_users"));
+  }
+
+  async function loadBandMemberIds(bandId) {
+    const { data, error } = await db.from("band_members")
+      .select("user_id").eq("band_id", bandId);
+    if (error) throw error;
+    return (data || []).map(row => String(row.user_id));
   }
 
   async function loadMyBands() {
@@ -235,21 +252,7 @@
 
     for (const user of allUsers) {
       if (user.id === String(currentUser.id)) continue;
-
-      const label = element(
-        "label", undefined, "member-option"
-      );
-
-      const checkbox = element("input");
-      checkbox.type = "checkbox";
-      checkbox.value = user.id;
-
-      label.append(
-        checkbox,
-        element("span", user.username)
-      );
-
-      container.appendChild(label);
+      container.append(memberOption(user));
     }
   }
 
@@ -433,6 +436,166 @@
   );
 
   // =====================================
+  // メンバー追加・削除
+  // =====================================
+
+  async function openMemberEditor(action) {
+    const adding = action === "add";
+    const operation = adding ? "追加" : "削除";
+    const title = `メンバーを${operation}`;
+    const dialog = element("dialog", undefined, "circle-modal band-member-dialog");
+    const heading = element("h2", title);
+    heading.id = "band-member-dialog-title";
+    heading.tabIndex = -1;
+    dialog.setAttribute("aria-labelledby", heading.id);
+    const body = element("div");
+    dialog.append(heading, body);
+    document.body.append(dialog);
+
+    let bands = [];
+    let saving = false;
+    dialog.addEventListener("cancel", event => {
+      if (saving) event.preventDefault();
+    });
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
+    heading.focus();
+
+    const cancel = () => button("キャンセル", () => dialog.close(), "secondary-button");
+    function status(text = "") {
+      const node = element("p", text);
+      node.setAttribute("role", "status");
+      return node;
+    }
+
+    function showBands() {
+      heading.textContent = title;
+      const options = bands.map(band => button(band.name, () => showMembers(band), "secondary-button"));
+      body.replaceChildren(
+        element("p", bands.length ? "対象バンドを選択してください。" : "所属しているバンドはありません。"),
+        ...options, cancel()
+      );
+      heading.focus();
+    }
+
+    async function showMembers(band) {
+      const selected = new Set();
+      const notice = status("メンバーを読み込み中…");
+      const picker = element("div");
+      const back = button("← バンド選択に戻る", showBands, "secondary-button");
+      picker.append(back, element("h3", band.name), notice, cancel());
+      body.replaceChildren(picker);
+      heading.focus();
+
+      let candidates;
+      try {
+        const [memberIds] = await Promise.all([loadBandMemberIds(band.id), loadUsers()]);
+        if (!dialog.open || !body.contains(picker)) return;
+        const actor = String(currentUser.id);
+        if (!memberIds.includes(actor)) throw new Error("このバンドに所属していません。");
+        const members = new Set(memberIds);
+        candidates = adding
+          ? allUsers.filter(user => !members.has(user.id))
+          : memberIds.filter(id => id !== actor).map(id => ({ id, username: username(id) }));
+      } catch (error) {
+        notice.textContent = `メンバーを読み込めませんでした。 ${error.message}`;
+        return;
+      }
+
+      const searchLabel = element("label", "ユーザ名で検索");
+      const search = element("input");
+      search.type = "search";
+      searchLabel.append(search);
+      const list = element("div", undefined, "member-list");
+      const closePicker = cancel();
+      const decide = button("決定", () => {
+        if (adding) save(decide, [back, closePicker, search], notice);
+        else confirmRemoval();
+      });
+      picker.replaceChildren(back, element("h3", band.name), searchLabel, list, notice, decide, closePicker);
+      picker.addEventListener("change", event => {
+        if (event.target.type !== "checkbox") return;
+        const { value, checked } = event.target;
+        if (checked) selected.add(value);
+        else selected.delete(value);
+        decide.disabled = !selected.size;
+      });
+      search.addEventListener("input", renderMembers);
+      renderMembers();
+
+      function renderMembers() {
+        const query = search.value.trim().toLocaleLowerCase("ja");
+        const matches = candidates.filter(user => user.username.toLocaleLowerCase("ja").includes(query));
+        list.replaceChildren(...matches.map(user => memberOption(user, selected.has(user.id))));
+        notice.textContent = !candidates.length ? `${operation}できるメンバーはいません。`
+          : matches.length ? "" : "検索条件に一致するメンバーはいません。";
+        decide.disabled = !selected.size;
+      }
+
+      function confirmRemoval() {
+        const names = element("ul");
+        for (const user of candidates) {
+          if (selected.has(user.id)) names.append(element("li", user.username));
+        }
+        const confirmation = status();
+        const backToPicker = button("キャンセル", () => {
+          heading.textContent = title;
+          body.replaceChildren(picker);
+          decide.focus();
+        }, "secondary-button");
+        const remove = button("削除", () => save(remove, [backToPicker], confirmation), "danger-button");
+        heading.textContent = "メンバー削除の確認";
+        body.replaceChildren(element("h3", band.name), element("p", "以下のメンバーをこのバンドから削除します。"),
+          names, confirmation, backToPicker, remove);
+        backToPicker.focus();
+      }
+
+      async function save(submit, controls, result) {
+        if (saving || !selected.size) return;
+        saving = true;
+        const inputs = [...list.querySelectorAll("input")];
+        for (const control of [submit, ...controls, ...inputs]) control.disabled = true;
+        result.textContent = `${operation}中…`;
+        let count;
+        try {
+          count = await rpc("change_band_members", {
+            p_band_id: band.id, p_member_ids: [...selected], p_action: action
+          });
+        } catch (error) {
+          result.textContent = `メンバーを${operation}できませんでした。 ${error.message}`;
+          return;
+        } finally {
+          saving = false;
+          for (const control of [submit, ...controls, ...inputs]) control.disabled = false;
+        }
+        if (!dialog.open) return;
+        dialog.close();
+        const success = `${band.name}のメンバーを${count}人${operation}しました。`;
+        message("band-list-message", success);
+        try {
+          await loadMyBands();
+          await renderBandList();
+        } catch {
+          message("band-list-message", `${success} 一覧を更新できませんでした。BANDを開き直してください。`);
+        }
+      }
+    }
+
+    body.replaceChildren(status("バンドを読み込み中…"), cancel());
+    try {
+      await loadMyBands();
+      if (!dialog.open) return;
+      bands = myBands;
+      showBands();
+    } catch (error) {
+      body.replaceChildren(status(`バンドを読み込めませんでした。 ${error.message}`), cancel());
+    }
+  }
+
+  $("open-add-band-members").addEventListener("click", () => openMemberEditor("add"));
+  $("open-remove-band-members").addEventListener("click", () => openMemberEditor("remove"));
+
+  // =====================================
   // バンド脱退
   // =====================================
 
@@ -570,16 +733,9 @@
 
       await loadUsers();
 
-      const { data, error } = await db
-        .from("band_members")
-        .select("user_id")
-        .eq("band_id", bandId);
-
-      if (error) throw error;
-
-      currentMembers = (data || []).map(row => ({
-        user_id: String(row.user_id),
-        username: username(row.user_id)
+      currentMembers = (await loadBandMemberIds(bandId)).map(id => ({
+        user_id: id,
+        username: username(id)
       }));
 
       selectedMemberIds = currentMembers.map(
